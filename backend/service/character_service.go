@@ -1,0 +1,818 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/google/uuid"
+	"life-sim/backend/ai"
+	"life-sim/backend/config"
+	"life-sim/backend/model"
+	"life-sim/backend/store"
+)
+
+type CharacterService struct {
+	store      *store.Store
+	ai         *ai.Client
+	stepYears  int
+	pending    map[string][]model.ResolveCandidate
+}
+
+func NewCharacterService(st *store.Store, aiClient *ai.Client, cfg *config.Config) *CharacterService {
+	return &CharacterService{
+		store:     st,
+		ai:        aiClient,
+		stepYears: cfg.TimelineStepYears,
+		pending:   make(map[string][]model.ResolveCandidate),
+	}
+}
+
+func (s *CharacterService) resolveAPIModel(modelID string) (string, error) {
+	return ai.ResolveAPIModel(modelID)
+}
+
+func (s *CharacterService) ListModels() []ai.ModelOption {
+	return ai.ListModels()
+}
+
+func (s *CharacterService) CreateCharacter(mode string) (*model.Character, error) {
+	if mode != model.ModeFamous && mode != model.ModeRandom {
+		return nil, fmt.Errorf("无效模式: %s", mode)
+	}
+	return s.store.CreateCharacter(mode)
+}
+
+func (s *CharacterService) GetCharacter(id string) (*model.Character, error) {
+	return s.store.GetCharacter(id)
+}
+
+func (s *CharacterService) ListHistory(limit int) ([]model.CharacterHistoryItem, error) {
+	return s.store.ListCharacterHistory(limit)
+}
+
+func (s *CharacterService) ResolvePerson(ctx context.Context, characterID, query string) ([]model.ResolveCandidate, error) {
+	ch, err := s.store.GetCharacter(characterID)
+	if err != nil {
+		return nil, err
+	}
+	if ch.Mode != model.ModeFamous {
+		return nil, fmt.Errorf("仅名人模式支持消歧")
+	}
+
+	system, err := s.ai.LoadPrompt("resolve_person.txt")
+	if err != nil {
+		return nil, err
+	}
+	user := fmt.Sprintf("用户输入的名字：%s", query)
+	raw, err := s.ai.ChatJSON(ctx, "", system, user, false)
+	if err != nil {
+		return nil, err
+	}
+
+	candidates, err := store.ParseResolveResult(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("未找到匹配的历史人物")
+	}
+
+	s.pending[characterID] = candidates
+	ch.ResolveQuery = query
+	ch.Status = model.StatusResolved
+	_ = s.store.UpdateCharacter(ch)
+	return candidates, nil
+}
+
+func (s *CharacterService) ConfirmPerson(characterID string, candidateIndex int) (*model.Character, error) {
+	candidates, ok := s.pending[characterID]
+	if !ok || candidateIndex < 0 || candidateIndex >= len(candidates) {
+		return nil, fmt.Errorf("无效的候选索引")
+	}
+	c := candidates[candidateIndex]
+	identity, _ := json.Marshal(c)
+
+	ch, err := s.store.GetCharacter(characterID)
+	if err != nil {
+		return nil, err
+	}
+	ch.DisplayName = c.Name
+	ch.ConfirmedIdentity = string(identity)
+	ch.Status = model.StatusConfirmed
+	if err := s.store.UpdateCharacter(ch); err != nil {
+		return nil, err
+	}
+	delete(s.pending, characterID)
+	return ch, nil
+}
+
+func (s *CharacterService) GenerateProfile(ctx context.Context, characterID string) (*model.Profile, error) {
+	ch, err := s.store.GetCharacter(characterID)
+	if err != nil {
+		return nil, err
+	}
+
+	var system, user string
+	switch ch.Mode {
+	case model.ModeFamous:
+		if ch.Status != model.StatusConfirmed {
+			return nil, fmt.Errorf("请先确认人物身份")
+		}
+		system, err = s.ai.LoadPrompt("fetch_profile_famous.txt")
+		if err != nil {
+			return nil, err
+		}
+		user = fmt.Sprintf("已确认身份：%s\n用户原始查询：%s", ch.ConfirmedIdentity, ch.ResolveQuery)
+	case model.ModeRandom:
+		system, err = s.ai.LoadPrompt("fetch_profile_random.txt")
+		if err != nil {
+			return nil, err
+		}
+		user = "请随机生成一个虚构普通人档案。"
+	default:
+		return nil, fmt.Errorf("未知模式")
+	}
+
+	raw, err := s.ai.ChatJSON(ctx, "", system, user, false)
+	if err != nil {
+		return nil, err
+	}
+	profile, err := store.ParseProfile(raw, characterID)
+	if err != nil {
+		return nil, err
+	}
+	if profile.DisplayName == "" && ch.DisplayName != "" {
+		profile.DisplayName = ch.DisplayName
+	}
+	if profile.DisplayName != "" {
+		ch.DisplayName = profile.DisplayName
+	}
+	if err := s.store.SaveProfile(profile); err != nil {
+		return nil, err
+	}
+	ch.Status = model.StatusProfileReady
+	_ = s.store.UpdateCharacter(ch)
+	return profile, nil
+}
+
+func (s *CharacterService) ImportTemplate(ctx context.Context, characterID, famousQuery string) (*model.Profile, error) {
+	ch, err := s.store.GetCharacter(characterID)
+	if err != nil {
+		return nil, err
+	}
+	if ch.Mode != model.ModeRandom {
+		return nil, fmt.Errorf("仅随机模式支持导入名人模板")
+	}
+
+	resolveSystem, err := s.ai.LoadPrompt("resolve_person.txt")
+	if err != nil {
+		return nil, err
+	}
+	resolveRaw, err := s.ai.ChatJSON(ctx, "", resolveSystem, "用户输入："+famousQuery, false)
+	if err != nil {
+		return nil, err
+	}
+	candidates, err := store.ParseResolveResult(resolveRaw)
+	if err != nil || len(candidates) == 0 {
+		return nil, fmt.Errorf("未能识别名人: %s", famousQuery)
+	}
+
+	importSystem, err := s.ai.LoadPrompt("import_template.txt")
+	if err != nil {
+		return nil, err
+	}
+	importUser := fmt.Sprintf("历史名人：%s\n简介：%s", candidates[0].Name, candidates[0].Summary)
+	importRaw, err := s.ai.ChatJSON(ctx, "", importSystem, importUser, false)
+	if err != nil {
+		return nil, err
+	}
+
+	var patch map[string]string
+	if err := json.Unmarshal([]byte(importRaw), &patch); err != nil {
+		return nil, err
+	}
+
+	profile, err := s.store.GetProfile(characterID)
+	if err != nil {
+		profile, err = s.GenerateProfile(ctx, characterID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	store.MergeProfile(profile, patch)
+	if err := s.store.SaveProfile(profile); err != nil {
+		return nil, err
+	}
+	return profile, nil
+}
+
+func (s *CharacterService) GetProfile(characterID string) (*model.Profile, error) {
+	return s.store.GetProfile(characterID)
+}
+
+func (s *CharacterService) StartTimelineJob(ctx context.Context, characterID string, req model.TimelineGenerateRequest) (*model.Job, error) {
+	ch, err := s.store.GetCharacter(characterID)
+	if err != nil {
+		return nil, err
+	}
+	if ch.Status != model.StatusProfileReady && ch.Status != model.StatusTimelineReady {
+		return nil, fmt.Errorf("请先生成人物档案")
+	}
+	profile, err := s.store.GetProfile(characterID)
+	if err != nil {
+		return nil, err
+	}
+	modelID := ai.NormalizeModelID(req.Model)
+	if _, err := s.resolveAPIModel(modelID); err != nil {
+		return nil, err
+	}
+	rangeCfg, err := store.ResolveTimelineRange(store.TimelineRangeConfig{
+		TargetNodeCount: req.TargetNodeCount,
+		StartYear:       req.StartYear,
+		EndYear:         req.EndYear,
+	}, profile)
+	if err != nil {
+		return nil, err
+	}
+
+	job, err := s.store.CreateJob(characterID, "timeline_generate", modelID)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := timelineJobConfig{
+		StepYears:       rangeCfg.StepYears,
+		TargetNodeCount: rangeCfg.TargetNodeCount,
+		StartYear:       rangeCfg.StartYear,
+		EndYear:         rangeCfg.EndYear,
+	}
+	go s.runTimelineGenerate(context.Background(), job.ID, characterID, profile, ch.CurrentVersionID, modelID, cfg)
+
+	return job, nil
+}
+
+type timelineJobConfig struct {
+	StepYears       int
+	TargetNodeCount int
+	StartYear       int
+	EndYear         int
+}
+
+func (s *CharacterService) runTimelineGenerate(ctx context.Context, jobID, characterID string, profile *model.Profile, parentVersionID, modelID string, cfg timelineJobConfig) {
+	span := cfg.EndYear - cfg.StartYear
+	log.Printf("[timeline] 开始生成 character=%s %s (%d-%d) target=%d nodes span=%d step=%d range=%d-%d",
+		characterID, profile.DisplayName, profile.BirthYear, profile.DeathYear,
+		cfg.TargetNodeCount, span, cfg.StepYears, cfg.StartYear, cfg.EndYear)
+
+	job, _ := s.store.GetJob(jobID)
+	job.Status = model.JobRunning
+	job.Progress = 10
+	_ = s.store.UpdateJob(job)
+
+	system, err := s.ai.LoadPrompt("generate_timeline.txt")
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	user := fmt.Sprintf("目标约 %d 个节点，生成区间 start_year=%d, end_year=%d（跨度 %d 年），参考间隔约 %d 年（非强制，以关键事件为准）\n人物档案：\n%s\nbirth_year=%d, death_year=%d",
+		cfg.TargetNodeCount, cfg.StartYear, cfg.EndYear, span, cfg.StepYears,
+		store.MustProfileJSON(profile), profile.BirthYear, profile.DeathYear)
+
+	job.Progress = 25
+	_ = s.store.UpdateJob(job)
+
+	apiModel, err := s.resolveAPIModel(modelID)
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+	job.Model = modelID
+	_ = s.store.UpdateJob(job)
+
+	done := make(chan struct{})
+	go tickJobProgress(s.store, jobID, 28, 88, done)
+
+	raw, err := s.ai.ChatJSONModel(ctx, apiModel, system, user)
+	close(done)
+	if err != nil {
+		log.Printf("[timeline] AI 调用失败: %v", err)
+		s.failJob(job, err.Error())
+		return
+	}
+
+	versionID := uuid.New().String()
+	nodes, err := store.ParseTimelineNodes(raw, characterID, versionID, profile.DisplayName)
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	version := &model.TimelineVersion{
+		ID:              versionID,
+		CharacterID:     characterID,
+		ParentVersionID: parentVersionID,
+		ChangeSummary:   fmt.Sprintf("生成时间轴（%d-%d，约%d个节点）", cfg.StartYear, cfg.EndYear, cfg.TargetNodeCount),
+		CreatedAt:       time.Now(),
+	}
+	if err := s.store.CreateVersion(version); err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+	if err := s.store.SaveNodes(nodes); err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	ch, _ := s.store.GetCharacter(characterID)
+	ch.CurrentVersionID = versionID
+	ch.Status = model.StatusTimelineReady
+	_ = s.store.UpdateCharacter(ch)
+
+	result, _ := json.Marshal(map[string]string{"version_id": versionID})
+	job.Status = model.JobCompleted
+	job.Progress = 100
+	job.Result = string(result)
+	_ = s.store.UpdateJob(job)
+	log.Printf("[timeline] 完成 character=%s nodes=%d", characterID, len(nodes))
+}
+
+func (s *CharacterService) failJob(job *model.Job, msg string) {
+	log.Printf("[job] 失败 id=%s: %s", job.ID, msg)
+	if err := s.store.MarkJobFailed(job.ID, msg); err != nil {
+		log.Printf("标记任务失败写入失败 job=%s: %v", job.ID, err)
+	}
+}
+
+func (s *CharacterService) GetTimeline(characterID, versionID string) ([]model.LifeNode, *model.TimelineVersion, error) {
+	ch, err := s.store.GetCharacter(characterID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if versionID == "" || versionID == "latest" {
+		versionID = ch.CurrentVersionID
+	}
+	if versionID == "" {
+		return nil, nil, fmt.Errorf("尚无时间轴版本")
+	}
+	version, err := s.store.GetVersion(versionID)
+	if err != nil {
+		return nil, nil, err
+	}
+	nodes, err := s.store.GetNodesByVersion(versionID)
+	return nodes, version, err
+}
+
+func (s *CharacterService) GetNode(nodeID string) (*model.LifeNode, error) {
+	return s.store.GetNode(nodeID)
+}
+
+func (s *CharacterService) PatchNodeAndRegenerate(ctx context.Context, characterID, nodeID string, req model.PatchNodeRequest) (*model.Job, error) {
+	node, err := s.store.GetNode(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	if node.CharacterID != characterID {
+		return nil, fmt.Errorf("节点不属于该角色")
+	}
+	req.Model = ai.NormalizeModelID(req.Model)
+	if _, err := s.resolveAPIModel(req.Model); err != nil {
+		return nil, err
+	}
+
+	node.Title = req.Title
+	node.Events = req.Events
+	node.Thoughts = req.Thoughts
+	node.PersonalitySnapshot = req.PersonalitySnapshot
+
+	mode := req.Mode
+	if mode == "" {
+		mode = model.PatchModeFullCascade
+	}
+
+	ch, err := s.store.GetCharacter(characterID)
+	if err != nil {
+		return nil, err
+	}
+	oldNodes, err := s.store.GetNodesByVersion(ch.CurrentVersionID)
+	if err != nil {
+		return nil, err
+	}
+
+	jobType := "timeline_regenerate"
+	switch mode {
+	case model.PatchModeInnerCurrent:
+		jobType = "node_inner_current"
+	case model.PatchModeInnerSubsequent:
+		jobType = "node_inner_subsequent"
+	}
+	job, err := s.store.CreateJob(characterID, jobType, req.Model)
+	if err != nil {
+		return nil, err
+	}
+
+	switch mode {
+	case model.PatchModeInnerCurrent:
+		go s.runInnerCurrent(context.Background(), job.ID, characterID, ch, oldNodes, node, req.Model)
+	case model.PatchModeInnerSubsequent:
+		locked := store.FilterNodesFromSequence(oldNodes, node.Sequence)
+		for i := range locked {
+			if locked[i].ID == node.ID {
+				locked[i] = *node
+				break
+			}
+		}
+		go s.runInnerSubsequent(context.Background(), job.ID, characterID, ch, locked, node, oldNodes, req.Model)
+	default:
+		locked := store.FilterNodesFromSequence(oldNodes, node.Sequence)
+		for i := range locked {
+			if locked[i].ID == node.ID {
+				locked[i] = *node
+				break
+			}
+		}
+		go s.runRegenerate(context.Background(), job.ID, characterID, ch, locked, node, oldNodes, req)
+	}
+
+	return job, nil
+}
+
+func (s *CharacterService) runInnerCurrent(ctx context.Context, jobID, characterID string, ch *model.Character, oldNodes []model.LifeNode, edited *model.LifeNode, modelID string) {
+	job, _ := s.store.GetJob(jobID)
+	job.Status = model.JobRunning
+	job.Progress = 15
+	job.Model = modelID
+	_ = s.store.UpdateJob(job)
+
+	profile, err := s.store.GetProfile(characterID)
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+	system, err := s.ai.LoadPrompt("regenerate_inner_current.txt")
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+	oldOne := findNodeBySeq(oldNodes, edited.Sequence)
+	oldThoughts, oldPersonality := "", ""
+	if oldOne != nil {
+		oldThoughts = oldOne.Thoughts
+		oldPersonality = oldOne.PersonalitySnapshot
+	}
+	user := fmt.Sprintf(
+		"人物档案（含初始性格、信念、经历摘要等原形）：\n%s\n"+
+			"前置人生节点（sequence<%d，含各阶段经历/想法/性格快照）：\n%s\n"+
+			"本节点原内心/性格（trait_changes 的 before 参考）：\nthoughts=%s\npersonality_snapshot=%s\n"+
+			"本节点（新经历，勿改 events）：sequence=%d year=%d title=%s\nevents=%s",
+		store.MustProfileJSON(profile),
+		edited.Sequence, store.MarshalNodesBeforeSequence(oldNodes, edited.Sequence),
+		oldThoughts, oldPersonality,
+		edited.Sequence, edited.Year, edited.Title, edited.Events,
+	)
+
+	job.Progress = 30
+	_ = s.store.UpdateJob(job)
+	done := make(chan struct{})
+	go tickJobProgress(s.store, jobID, 32, 85, done)
+
+	apiModel, _ := s.resolveAPIModel(modelID)
+	raw, err := s.ai.ChatJSONModel(ctx, apiModel, system, user)
+	close(done)
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+	thoughts, personality, traits, entities, scene, err := store.ParseInnerCurrent(raw, profile.DisplayName)
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	newVersionID := uuid.New().String()
+	allNodes := store.CopyNodesWithNewVersion(oldNodes, newVersionID)
+	for i := range allNodes {
+		if allNodes[i].Sequence == edited.Sequence {
+			allNodes[i].Title = edited.Title
+			allNodes[i].Events = edited.Events
+			allNodes[i].Thoughts = thoughts
+			allNodes[i].PersonalitySnapshot = personality
+			allNodes[i].TraitChanges = traits
+			allNodes[i].Entities = entities
+			if scene != nil {
+				allNodes[i].Scene = scene
+			}
+			break
+		}
+	}
+
+	version := &model.TimelineVersion{
+		ID: newVersionID, CharacterID: characterID, ParentVersionID: ch.CurrentVersionID,
+		TriggerNodeID: edited.ID, ChangeSummary: fmt.Sprintf("重算节点 #%d 内心与性格", edited.Sequence),
+		CreatedAt: time.Now(),
+	}
+	if err := s.store.CreateVersion(version); err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+	if err := s.store.SaveNodes(allNodes); err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	diff := store.ComputeVersionDiff(oldNodes, allNodes, edited.ID)
+	s.finishRegenerateJob(job, ch, newVersionID, diff)
+}
+
+func (s *CharacterService) runInnerSubsequent(ctx context.Context, jobID, characterID string, ch *model.Character, locked []model.LifeNode, edited *model.LifeNode, oldNodes []model.LifeNode, modelID string) {
+	job, _ := s.store.GetJob(jobID)
+	job.Status = model.JobRunning
+	job.Progress = 15
+	job.Model = modelID
+	_ = s.store.UpdateJob(job)
+
+	profile, err := s.store.GetProfile(characterID)
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+	tail := store.NodesAfterSequence(oldNodes, edited.Sequence)
+	if len(tail) == 0 {
+		s.runInnerCurrent(ctx, jobID, characterID, ch, oldNodes, edited, modelID)
+		return
+	}
+
+	system, err := s.ai.LoadPrompt("regenerate_inner_subsequent.txt")
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+	tailJSON, _ := json.Marshal(tail)
+	lockedJSON, _ := json.Marshal(locked)
+	user := fmt.Sprintf(
+		"人物档案（含初始性格、信念、经历摘要等原形）：\n%s\n"+
+			"已发生人生节点（含修改后的锚点，sequence<=%d）：\n%s\n"+
+			"后续节点（保留 title/events/year，仅重算内心与性格）：\n%s",
+		store.MustProfileJSON(profile), edited.Sequence, string(lockedJSON), string(tailJSON),
+	)
+
+	job.Progress = 30
+	_ = s.store.UpdateJob(job)
+	done := make(chan struct{})
+	go tickJobProgress(s.store, jobID, 32, 88, done)
+
+	apiModel, _ := s.resolveAPIModel(modelID)
+	raw, err := s.ai.ChatJSONModel(ctx, apiModel, system, user)
+	close(done)
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+	innerMap, err := store.ParseInnerSubsequent(raw, profile.DisplayName)
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	newVersionID := uuid.New().String()
+	allNodes := make([]model.LifeNode, 0, len(oldNodes))
+	for _, n := range locked {
+		nn := n
+		nn.VersionID = newVersionID
+		nn.ID = uuid.New().String()
+		allNodes = append(allNodes, nn)
+	}
+	for _, n := range tail {
+		nn := n
+		nn.VersionID = newVersionID
+		nn.ID = uuid.New().String()
+		if inner, ok := innerMap[n.Sequence]; ok {
+			nn.Thoughts = inner.Thoughts
+			nn.PersonalitySnapshot = inner.PersonalitySnapshot
+			nn.TraitChanges = inner.TraitChanges
+			nn.Entities = inner.Entities
+			if inner.Scene != nil {
+				nn.Scene = inner.Scene
+			}
+		}
+		allNodes = append(allNodes, nn)
+	}
+
+	version := &model.TimelineVersion{
+		ID: newVersionID, CharacterID: characterID, ParentVersionID: ch.CurrentVersionID,
+		TriggerNodeID: edited.ID,
+		ChangeSummary: fmt.Sprintf("重算节点 #%d 之后内心与性格（保留经历）", edited.Sequence),
+		CreatedAt: time.Now(),
+	}
+	if err := s.store.CreateVersion(version); err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+	if err := s.store.SaveNodes(allNodes); err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	diff := store.ComputeVersionDiff(oldNodes, allNodes, edited.ID)
+	s.finishRegenerateJob(job, ch, newVersionID, diff)
+}
+
+func findNodeBySeq(nodes []model.LifeNode, seq int) *model.LifeNode {
+	for i := range nodes {
+		if nodes[i].Sequence == seq {
+			return &nodes[i]
+		}
+	}
+	return nil
+}
+
+func (s *CharacterService) finishRegenerateJob(job *model.Job, ch *model.Character, newVersionID string, diff []model.NodeFieldChange) {
+	if diff == nil {
+		diff = []model.NodeFieldChange{}
+	}
+	diffJSON, _ := json.Marshal(model.VersionDiff{
+		VersionID: newVersionID, ParentVersionID: ch.CurrentVersionID, Changes: diff,
+	})
+	ch.CurrentVersionID = newVersionID
+	_ = s.store.UpdateCharacter(ch)
+	job.Status = model.JobCompleted
+	job.Progress = 100
+	job.Result = string(diffJSON)
+	_ = s.store.UpdateJob(job)
+}
+
+func (s *CharacterService) runRegenerate(ctx context.Context, jobID, characterID string, ch *model.Character, locked []model.LifeNode, edited *model.LifeNode, oldNodes []model.LifeNode, req model.PatchNodeRequest) {
+	modelID := req.Model
+	job, _ := s.store.GetJob(jobID)
+	job.Status = model.JobRunning
+	job.Progress = 15
+	job.Model = modelID
+	_ = s.store.UpdateJob(job)
+
+	profile, err := s.store.GetProfile(characterID)
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	stepYears, targetNodes := store.ResolveRegenerateTailRange(edited.Year, profile.DeathYear, req.TargetNodeCount)
+
+	// 1. 重算寿命
+	job.Progress = 25
+	_ = s.store.UpdateJob(job)
+	life, err := s.recalculateLifespan(ctx, profile, locked, edited, modelID)
+	if err != nil {
+		s.failJob(job, "寿命重算失败: "+err.Error())
+		return
+	}
+	if life.DeathYear > edited.Year {
+		profile.DeathYear = life.DeathYear
+		if life.DeathCause != "" {
+			profile.DeathCause = life.DeathCause
+		}
+		if err := s.store.SaveProfile(profile); err != nil {
+			s.failJob(job, err.Error())
+			return
+		}
+	}
+
+	// 2. 完全重新生成后续时间轴
+	system, err := s.ai.LoadPrompt("regenerate_full_tail.txt")
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	lockedJSON, _ := json.Marshal(locked)
+	remainingSpan := profile.DeathYear - edited.Year
+	if remainingSpan < 0 {
+		remainingSpan = 0
+	}
+	user := fmt.Sprintf(
+		"目标约 %d 个后续节点，锚点 year=%d，death_year=%d（剩余跨度 %d 年），参考间隔约 %d 年（非强制，以关键事件为准）\n"+
+			"人物档案（含初始性格、信念、经历摘要等原形）：\n%s\n"+
+			"已锁定人生节点（含锚点及之前全部经历/想法/性格，须作为后续衔接基准）：\n%s\n"+
+			"锚点节点（编辑后）：sequence=%d year=%d age=%d title=%s\nevents=%s\n"+
+			"寿命重算说明：%s",
+		targetNodes, edited.Year, profile.DeathYear, remainingSpan, stepYears,
+		store.MustProfileJSON(profile), string(lockedJSON),
+		edited.Sequence, edited.Year, edited.Age, edited.Title, edited.Events,
+		life.Reasoning,
+	)
+
+	job.Progress = 40
+	_ = s.store.UpdateJob(job)
+
+	apiModel, err := s.resolveAPIModel(modelID)
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	done := make(chan struct{})
+	go tickJobProgress(s.store, jobID, 42, 88, done)
+
+	raw, err := s.ai.ChatJSONModel(ctx, apiModel, system, user)
+	close(done)
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	newVersionID := uuid.New().String()
+	newTail, err := store.ParseTimelineNodes(raw, characterID, newVersionID, profile.DisplayName)
+	if err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	allNodes := make([]model.LifeNode, 0, len(locked)+len(newTail))
+	for _, n := range locked {
+		n.VersionID = newVersionID
+		allNodes = append(allNodes, n)
+	}
+	for _, n := range newTail {
+		n.VersionID = newVersionID
+		n.ID = uuid.New().String()
+		allNodes = append(allNodes, n)
+	}
+	version := &model.TimelineVersion{
+		ID:              newVersionID,
+		CharacterID:     characterID,
+		ParentVersionID: ch.CurrentVersionID,
+		TriggerNodeID:   edited.ID,
+		ChangeSummary:   fmt.Sprintf("编辑节点 #%d 后重算寿命并全新生成后续（卒于%d年）", edited.Sequence, profile.DeathYear),
+		CreatedAt:       time.Now(),
+	}
+
+	if err := s.store.CreateVersion(version); err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+	if err := s.store.SaveNodes(allNodes); err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	diff := store.ComputeVersionDiff(oldNodes, allNodes, edited.ID)
+	s.finishRegenerateJob(job, ch, newVersionID, diff)
+}
+
+func (s *CharacterService) ListVersions(characterID string) ([]model.TimelineVersion, error) {
+	return s.store.ListVersions(characterID)
+}
+
+func (s *CharacterService) GetVersionDiff(characterID, versionID string) (*model.VersionDiff, error) {
+	version, err := s.store.GetVersion(versionID)
+	if err != nil {
+		return nil, err
+	}
+	if version.CharacterID != characterID {
+		return nil, fmt.Errorf("版本不属于该角色")
+	}
+	if version.ParentVersionID == "" {
+		return &model.VersionDiff{VersionID: versionID, ParentVersionID: "", Changes: []model.NodeFieldChange{}}, nil
+	}
+
+	newNodes, err := s.store.GetNodesByVersion(versionID)
+	if err != nil {
+		return nil, err
+	}
+	oldNodes, err := s.store.GetNodesByVersion(version.ParentVersionID)
+	if err != nil {
+		return nil, err
+	}
+
+	changes := store.ComputeVersionDiff(oldNodes, newNodes, version.TriggerNodeID)
+	return &model.VersionDiff{
+		VersionID:       versionID,
+		ParentVersionID: version.ParentVersionID,
+		Changes:         changes,
+	}, nil
+}
+
+func (s *CharacterService) Rollback(characterID, versionID string) (*model.Character, error) {
+	version, err := s.store.GetVersion(versionID)
+	if err != nil {
+		return nil, err
+	}
+	if version.CharacterID != characterID {
+		return nil, fmt.Errorf("版本不属于该角色")
+	}
+	ch, err := s.store.GetCharacter(characterID)
+	if err != nil {
+		return nil, err
+	}
+	ch.CurrentVersionID = versionID
+	if err := s.store.UpdateCharacter(ch); err != nil {
+		return nil, err
+	}
+	return ch, nil
+}
+
+func (s *CharacterService) GetJob(jobID string) (*model.Job, error) {
+	return s.store.GetJob(jobID)
+}

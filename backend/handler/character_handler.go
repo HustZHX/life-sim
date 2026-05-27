@@ -1,0 +1,249 @@
+package handler
+
+import (
+	"database/sql"
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gin-gonic/gin"
+	"life-sim/backend/model"
+	"life-sim/backend/service"
+)
+
+type CharacterHandler struct {
+	svc *service.CharacterService
+}
+
+func NewCharacterHandler(svc *service.CharacterService) *CharacterHandler {
+	return &CharacterHandler{svc: svc}
+}
+
+func (h *CharacterHandler) ListHistory(c *gin.Context) {
+	limit := 100
+	if l := c.Query("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	items, err := h.svc.ListHistory(limit)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, gin.H{"items": items, "total": len(items)})
+}
+
+func (h *CharacterHandler) CreateCharacter(c *gin.Context) {
+	var req struct {
+		Mode string `json:"mode" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		return
+	}
+	ch, err := h.svc.CreateCharacter(req.Mode)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	OK(c, ch)
+}
+
+func (h *CharacterHandler) Resolve(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		Query string `json:"query" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+	candidates, err := h.svc.ResolvePerson(c.Request.Context(), id, req.Query)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, gin.H{"candidates": candidates})
+}
+
+func (h *CharacterHandler) Confirm(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		CandidateIndex int `json:"candidate_index"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+	ch, err := h.svc.ConfirmPerson(id, req.CandidateIndex)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	OK(c, ch)
+}
+
+func (h *CharacterHandler) GenerateProfile(c *gin.Context) {
+	id := c.Param("id")
+	profile, err := h.svc.GenerateProfile(c.Request.Context(), id)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, profile)
+}
+
+func (h *CharacterHandler) ImportTemplate(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		FamousQuery string `json:"famous_query" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+	profile, err := h.svc.ImportTemplate(c.Request.Context(), id, req.FamousQuery)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, profile)
+}
+
+func (h *CharacterHandler) GetProfile(c *gin.Context) {
+	id := c.Param("id")
+	profile, err := h.svc.GetProfile(id)
+	if err != nil {
+		Fail(c, http.StatusNotFound, 404, "档案不存在")
+		return
+	}
+	OK(c, profile)
+}
+
+func (h *CharacterHandler) RecommendTimeline(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		Model string `json:"model"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	recs, err := h.svc.RecommendTimelineConfigs(c.Request.Context(), id, req.Model)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, gin.H{"recommendations": recs})
+}
+
+func (h *CharacterHandler) GenerateTimeline(c *gin.Context) {
+	id := c.Param("id")
+	var req model.TimelineGenerateRequest
+	_ = c.ShouldBindJSON(&req)
+	job, err := h.svc.StartTimelineJob(c.Request.Context(), id, req)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, job)
+}
+
+func (h *CharacterHandler) GetTimeline(c *gin.Context) {
+	id := c.Param("id")
+	version := c.Query("version")
+	nodes, ver, err := h.svc.GetTimeline(id, version)
+	if err != nil {
+		Fail(c, http.StatusNotFound, 404, err.Error())
+		return
+	}
+	OK(c, gin.H{"version": ver, "nodes": nodes})
+}
+
+func (h *CharacterHandler) GetNode(c *gin.Context) {
+	nodeID := c.Param("nodeId")
+	node, err := h.svc.GetNode(nodeID)
+	if err != nil {
+		Fail(c, http.StatusNotFound, 404, "节点不存在")
+		return
+	}
+	OK(c, node)
+}
+
+func (h *CharacterHandler) PatchNode(c *gin.Context) {
+	charID := c.Param("id")
+	nodeID := c.Param("nodeId")
+	var req model.PatchNodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+	job, err := h.svc.PatchNodeAndRegenerate(c.Request.Context(), charID, nodeID, req)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, job)
+}
+
+func (h *CharacterHandler) ListVersions(c *gin.Context) {
+	id := c.Param("id")
+	versions, err := h.svc.ListVersions(id)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, gin.H{"versions": versions})
+}
+
+func (h *CharacterHandler) GetVersionDiff(c *gin.Context) {
+	charID := c.Param("id")
+	vid := c.Param("vid")
+	diff, err := h.svc.GetVersionDiff(charID, vid)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, diff)
+}
+
+func (h *CharacterHandler) Rollback(c *gin.Context) {
+	charID := c.Param("id")
+	vid := c.Param("vid")
+	ch, err := h.svc.Rollback(charID, vid)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	OK(c, ch)
+}
+
+func (h *CharacterHandler) GetJob(c *gin.Context) {
+	jobID := c.Param("jobId")
+	job, err := h.svc.GetJob(jobID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			Fail(c, http.StatusNotFound, 404, "任务不存在（可能服务已重启，请重新提交）")
+			return
+		}
+		Fail(c, http.StatusInternalServerError, 500, "查询任务失败: "+err.Error())
+		return
+	}
+	OK(c, job)
+}
+
+func (h *CharacterHandler) GetCharacter(c *gin.Context) {
+	id := c.Param("id")
+	ch, err := h.svc.GetCharacter(id)
+	if err != nil {
+		Fail(c, http.StatusNotFound, 404, "角色不存在")
+		return
+	}
+	OK(c, ch)
+}
+
+func (h *CharacterHandler) ListModels(c *gin.Context) {
+	OK(c, gin.H{"models": h.svc.ListModels()})
+}
+
+func (h *CharacterHandler) Health(c *gin.Context) {
+	OK(c, gin.H{"status": "ok"})
+}
