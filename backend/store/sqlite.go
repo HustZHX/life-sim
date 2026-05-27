@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -149,6 +150,64 @@ CREATE TABLE IF NOT EXISTS narrative_artifacts (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_narrative_cache ON narrative_artifacts(
   version_id, kind, node_id, from_sequence, to_sequence
+);
+`)
+	if err != nil {
+		return err
+	}
+	_, _ = s.db.Exec(`ALTER TABLE narrative_artifacts ADD COLUMN person TEXT DEFAULT 'first'`)
+	_, _ = s.db.Exec(`DROP INDEX IF EXISTS idx_narrative_cache`)
+	_, _ = s.db.Exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_narrative_cache ON narrative_artifacts(
+  version_id, kind, node_id, from_sequence, to_sequence, person
+)`)
+	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN request_json TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_jobs_char_type ON jobs(character_id, type, created_at DESC)`)
+	_, err = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS character_memories (
+  id TEXT PRIMARY KEY,
+  character_id TEXT NOT NULL REFERENCES characters(id),
+  version_id TEXT NOT NULL,
+  source_node_id TEXT NOT NULL,
+  source_sequence INTEGER NOT NULL,
+  speaker_identity TEXT NOT NULL DEFAULT '',
+  content TEXT NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memories_version_seq ON character_memories(version_id, source_sequence);
+
+CREATE TABLE IF NOT EXISTS dialogue_sessions (
+  id TEXT PRIMARY KEY,
+  character_id TEXT NOT NULL REFERENCES characters(id),
+  version_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  node_sequence INTEGER NOT NULL,
+  speaker_identity TEXT NOT NULL,
+  model TEXT NOT NULL DEFAULT 'flash',
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dialogue_sessions_node ON dialogue_sessions(character_id, version_id, node_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS dialogue_messages (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES dialogue_sessions(id),
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dialogue_msg_session ON dialogue_messages(session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS dialogue_identity_presets (
+  character_id TEXT NOT NULL,
+  version_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  options_json TEXT NOT NULL,
+  model TEXT NOT NULL DEFAULT 'flash',
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (character_id, version_id, node_id)
 );
 `)
 	if err != nil {
@@ -385,6 +444,40 @@ func (s *Store) GetVersion(id string) (*model.TimelineVersion, error) {
 	return s.scanTimelineVersionRow(row)
 }
 
+func (s *Store) UpdateLifeNode(n model.LifeNode) error {
+	tc, _ := json.Marshal(n.TraitChanges)
+	entitiesJSON := marshalEntities(n.Entities)
+	sceneJSON := marshalScene(n.Scene)
+	_, err := s.db.Exec(
+		`UPDATE life_nodes SET title=?, events=?, thoughts=?, personality_snapshot=?, trait_changes_json=?, entities_json=?, scene_json=? WHERE id=?`,
+		n.Title, n.Events, n.Thoughts, n.PersonalitySnapshot, string(tc), entitiesJSON, sceneJSON, n.ID,
+	)
+	return err
+}
+
+func (s *Store) ReplaceNodesForVersion(versionID string, nodes []model.LifeNode) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM life_nodes WHERE version_id = ?`, versionID); err != nil {
+		return err
+	}
+	for _, n := range nodes {
+		tc, _ := json.Marshal(n.TraitChanges)
+		entitiesJSON := marshalEntities(n.Entities)
+		sceneJSON := marshalScene(n.Scene)
+		if _, err := tx.Exec(
+			`INSERT INTO life_nodes (id, character_id, version_id, sequence, year, age, title, events, thoughts, personality_snapshot, trait_changes_json, entities_json, scene_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			n.ID, n.CharacterID, n.VersionID, n.Sequence, n.Year, n.Age, n.Title, n.Events, n.Thoughts, n.PersonalitySnapshot, string(tc), entitiesJSON, sceneJSON,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) SaveNodes(nodes []model.LifeNode) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -454,6 +547,10 @@ func (s *Store) GetNode(id string) (*model.LifeNode, error) {
 }
 
 func (s *Store) CreateJob(characterID, jobType, modelID string) (*model.Job, error) {
+	return s.CreateJobWithRequest(characterID, jobType, modelID, "")
+}
+
+func (s *Store) CreateJobWithRequest(characterID, jobType, modelID, requestJSON string) (*model.Job, error) {
 	now := time.Now()
 	j := &model.Job{
 		ID:          uuid.New().String(),
@@ -462,12 +559,13 @@ func (s *Store) CreateJob(characterID, jobType, modelID string) (*model.Job, err
 		Status:      model.JobPending,
 		Progress:    0,
 		Model:       modelID,
+		RequestJSON: requestJSON,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO jobs (id, character_id, type, status, progress, stage_text, model, result_json, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, '', ?, '', '', ?, ?)`,
-		j.ID, j.CharacterID, j.Type, j.Status, j.Progress, j.Model, j.CreatedAt, j.UpdatedAt,
+		`INSERT INTO jobs (id, character_id, type, status, progress, stage_text, model, request_json, result_json, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, '', ?, ?, '', '', ?, ?)`,
+		j.ID, j.CharacterID, j.Type, j.Status, j.Progress, j.Model, j.RequestJSON, j.CreatedAt, j.UpdatedAt,
 	)
 	return j, err
 }
@@ -475,8 +573,8 @@ func (s *Store) CreateJob(characterID, jobType, modelID string) (*model.Job, err
 func (s *Store) UpdateJob(j *model.Job) error {
 	j.UpdatedAt = time.Now()
 	_, err := s.db.Exec(
-		`UPDATE jobs SET status=?, progress=?, stage_text=?, model=?, result_json=?, error=?, updated_at=? WHERE id=?`,
-		j.Status, j.Progress, j.StageText, j.Model, j.Result, j.Error, j.UpdatedAt, j.ID,
+		`UPDATE jobs SET status=?, progress=?, stage_text=?, model=?, request_json=?, result_json=?, error=?, updated_at=? WHERE id=?`,
+		j.Status, j.Progress, j.StageText, j.Model, j.RequestJSON, j.Result, j.Error, j.UpdatedAt, j.ID,
 	)
 	return err
 }
@@ -501,17 +599,44 @@ func (s *Store) MarkJobFailed(jobID, msg string) error {
 
 func (s *Store) GetJob(id string) (*model.Job, error) {
 	row := s.db.QueryRow(
-		`SELECT id, character_id, type, status, progress, COALESCE(stage_text,''), COALESCE(model,''), result_json, error, created_at, updated_at FROM jobs WHERE id = ?`,
+		`SELECT id, character_id, type, status, progress, COALESCE(stage_text,''), COALESCE(model,''), COALESCE(request_json,''), result_json, error, created_at, updated_at FROM jobs WHERE id = ?`,
 		id,
 	)
 	var j model.Job
 	var created, updated string
-	if err := row.Scan(&j.ID, &j.CharacterID, &j.Type, &j.Status, &j.Progress, &j.StageText, &j.Model, &j.Result, &j.Error, &created, &updated); err != nil {
+	if err := row.Scan(&j.ID, &j.CharacterID, &j.Type, &j.Status, &j.Progress, &j.StageText, &j.Model, &j.RequestJSON, &j.Result, &j.Error, &created, &updated); err != nil {
 		return nil, err
 	}
 	j.CreatedAt = parseDBTime(created)
 	j.UpdatedAt = parseDBTime(updated)
 	return &j, nil
+}
+
+func (s *Store) ListJobsByCharacterAndType(characterID, jobType string, limit int) ([]model.Job, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(
+		`SELECT id, character_id, type, status, progress, COALESCE(stage_text,''), COALESCE(model,''), COALESCE(request_json,''), result_json, error, created_at, updated_at
+		 FROM jobs WHERE character_id=? AND type=? ORDER BY created_at DESC LIMIT ?`,
+		characterID, jobType, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]model.Job, 0)
+	for rows.Next() {
+		var j model.Job
+		var created, updated string
+		if err := rows.Scan(&j.ID, &j.CharacterID, &j.Type, &j.Status, &j.Progress, &j.StageText, &j.Model, &j.RequestJSON, &j.Result, &j.Error, &created, &updated); err != nil {
+			return nil, err
+		}
+		j.CreatedAt = parseDBTime(created)
+		j.UpdatedAt = parseDBTime(updated)
+		out = append(out, j)
+	}
+	return out, rows.Err()
 }
 
 // RecoverStaleJobs 将服务重启前未完成的 running/pending 任务标为失败。
@@ -714,6 +839,37 @@ func ParseInnerSubsequent(raw string, protagonistName string) (map[int]InnerSubs
 		}
 	}
 	return m, nil
+}
+
+func ParsePersonalityImpact(raw string) (*model.PersonalityImpact, error) {
+	var resp struct {
+		HasImpact           bool            `json:"has_impact"`
+		Summary             string          `json:"summary"`
+		Thoughts            string          `json:"thoughts"`
+		PersonalitySnapshot string          `json:"personality_snapshot"`
+		TraitChanges        json.RawMessage `json:"trait_changes"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return nil, err
+	}
+	traits, err := ParseTraitChangesJSON(resp.TraitChanges)
+	if err != nil {
+		return nil, err
+	}
+	impact := &model.PersonalityImpact{
+		HasImpact:           resp.HasImpact,
+		Summary:             resp.Summary,
+		Thoughts:            resp.Thoughts,
+		PersonalitySnapshot: resp.PersonalitySnapshot,
+		TraitChanges:        traits,
+	}
+	if !impact.HasImpact {
+		return impact, nil
+	}
+	if strings.TrimSpace(impact.Thoughts) == "" && strings.TrimSpace(impact.PersonalitySnapshot) == "" && len(impact.TraitChanges) == 0 {
+		impact.HasImpact = false
+	}
+	return impact, nil
 }
 
 func CopyNodesWithNewVersion(nodes []model.LifeNode, versionID string) []model.LifeNode {

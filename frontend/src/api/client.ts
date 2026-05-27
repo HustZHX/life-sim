@@ -21,12 +21,24 @@ export interface Character {
   current_timeline_id?: string
 }
 
+export interface TimelineActiveJob {
+  id: string
+  type: string
+  status: string
+  progress: number
+  stage_text?: string
+}
+
 export interface Timeline {
   id: string
   character_id: string
   title: string
   current_version_id?: string
   node_count?: number
+  version_count?: number
+  generation_status?: 'ready' | 'generating' | 'failed'
+  generation_error?: string
+  active_job?: TimelineActiveJob
   created_at: string
   updated_at: string
 }
@@ -145,6 +157,7 @@ export interface BranchNode {
   death_year_snapshot?: number
   death_cause_snapshot?: string
   is_active: boolean
+  creates_branch?: boolean
   created_at: string
   children?: BranchNode[]
 }
@@ -152,6 +165,7 @@ export interface BranchNode {
 export interface BranchTreeResponse {
   timeline_id: string
   active_version_id: string
+  display_active_branch_id?: string
   roots: BranchNode[]
 }
 
@@ -159,12 +173,14 @@ export interface BranchOverviewNodeLite {
   sequence: number
   year: number
   title: string
+  trait_changes?: TraitChange[]
 }
 
 export interface BranchOverviewEntry {
   version_id: string
   label: string
   is_active: boolean
+  creates_branch?: boolean
   fork_sequence?: number
   death_year_snapshot?: number
   nodes: BranchOverviewNodeLite[]
@@ -184,8 +200,11 @@ export interface Job {
   progress: number
   stage_text?: string
   model?: string
+  request_json?: string
   result?: string
   error?: string
+  created_at?: string
+  updated_at?: string
 }
 
 export interface AIModel {
@@ -281,18 +300,114 @@ export interface NarrativeArtifact {
   created_at?: string
 }
 
+export type LightNovelPerson = 'first' | 'second' | 'third'
+
 export interface LightNovelRequest {
   model?: AIModelId
   version_id: string
   from_sequence: number
   to_sequence: number
+  person?: LightNovelPerson
   force?: boolean
+}
+
+export interface SavedLightNovelMeta {
+  id: string
+  character_id: string
+  display_name?: string
+  version_id: string
+  from_sequence: number
+  to_sequence: number
+  person?: LightNovelPerson
+  model?: string
+  branch?: string
+  created_at?: string
+}
+
+export interface SavedLightNovel extends SavedLightNovelMeta {
+  content: string
 }
 
 export interface NodeNarrativeRequest {
   model?: AIModelId
   force?: boolean
 }
+
+export interface DialogueIdentityOption {
+  label: string
+  description: string
+}
+
+export interface DialogueMessage {
+  id: string
+  session_id: string
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
+}
+
+export interface DialogueSession {
+  id: string
+  character_id: string
+  version_id: string
+  node_id: string
+  node_sequence: number
+  speaker_identity: string
+  model: AIModelId
+  created_at: string
+  updated_at: string
+  messages?: DialogueMessage[]
+}
+
+export interface DialogueSessionSummary {
+  id: string
+  character_id: string
+  version_id: string
+  node_id: string
+  node_sequence: number
+  node_year?: number
+  node_age?: number
+  node_title?: string
+  speaker_identity: string
+  model: AIModelId
+  message_count: number
+  last_message?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface PersonalityImpact {
+  has_impact: boolean
+  summary?: string
+  thoughts?: string
+  personality_snapshot?: string
+  trait_changes?: TraitChange[]
+}
+
+export interface SendDialogueMessageResponse {
+  user_message: DialogueMessage
+  assistant_message: DialogueMessage
+  impact?: PersonalityImpact
+}
+
+export interface CharacterMemory {
+  id: string
+  character_id: string
+  version_id: string
+  source_node_id: string
+  source_sequence: number
+  speaker_identity: string
+  content: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ApplyDialogueImpactResponse {
+  version_id: string
+  node: LifeNode
+}
+
+export const DIALOGUE_IDENTITY_READER = '命运读者'
 
 export interface NarrativeCachedResponse {
   artifact: NarrativeArtifact
@@ -427,6 +542,9 @@ export const api = {
   patchNode: (charId: string, nodeId: string, body: PatchNodePayload) =>
     unwrap<Job>(http.patch(`/api/v1/characters/${charId}/nodes/${nodeId}`, body)),
 
+  getNode: (charId: string, nodeId: string) =>
+    unwrap<LifeNode>(http.get(`/api/v1/characters/${charId}/nodes/${nodeId}`)),
+
   previewLifespan: (
     charId: string,
     nodeId: string,
@@ -502,6 +620,21 @@ export const api = {
       http.post(`/api/v1/characters/${charId}/narratives/light-novel`, body)
     ),
 
+  listLightNovelJobs: (charId: string, limit = 30) =>
+    unwrap<{ jobs: Job[] }>(
+      http.get(`/api/v1/characters/${charId}/narratives/light-novel/jobs`, {
+        params: { limit },
+      })
+    ),
+
+  listSavedLightNovels: (params?: { character_id?: string }) =>
+    unwrap<{ items: SavedLightNovelMeta[]; branch?: string }>(
+      http.get('/api/v1/light-novels', { params })
+    ),
+
+  getSavedLightNovel: (id: string) =>
+    unwrap<SavedLightNovel>(http.get(`/api/v1/light-novels/${id}`)),
+
   applyNarrativeChange: (charId: string, body: NarrativeChangeRequest) =>
     unwrap<Job>(http.post(`/api/v1/characters/${charId}/timeline/narrative-change`, body)),
 
@@ -513,6 +646,106 @@ export const api = {
   ) =>
     unwrap<Job | NarrativeCachedResponse>(
       http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/narratives/${kind}`, body ?? {})
+    ),
+
+  getSavedDialogueIdentityOptions: (charId: string, nodeId: string) =>
+    unwrap<{ options: DialogueIdentityOption[]; has_saved: boolean }>(
+      http.get(`/api/v1/characters/${charId}/nodes/${nodeId}/dialogue/identity-options`)
+    ),
+
+  generateDialogueIdentityOptions: (
+    charId: string,
+    nodeId: string,
+    model: AIModelId = DEFAULT_AI_MODEL,
+    regenerate = false
+  ) =>
+    unwrap<{ options: DialogueIdentityOption[] }>(
+      http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/dialogue/identity-options`, {
+        model,
+        regenerate,
+      })
+    ),
+
+  getLatestDialogueSession: (charId: string, nodeId: string) =>
+    unwrap<{ session: DialogueSession | null }>(
+      http.get(`/api/v1/characters/${charId}/nodes/${nodeId}/dialogue/latest-session`)
+    ),
+
+  listDialogueSessions: (charId: string, versionId?: string) =>
+    unwrap<{ items: DialogueSessionSummary[] }>(
+      http.get(`/api/v1/characters/${charId}/dialogue/sessions`, {
+        params: versionId ? { version_id: versionId } : undefined,
+      })
+    ),
+
+  createDialogueSession: (
+    charId: string,
+    nodeId: string,
+    body: { identity: string; model?: AIModelId; resume?: boolean }
+  ) =>
+    unwrap<DialogueSession>(
+      http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/dialogue/sessions`, body)
+    ),
+
+  getDialogueSession: (charId: string, sessionId: string) =>
+    unwrap<DialogueSession>(http.get(`/api/v1/characters/${charId}/dialogue/sessions/${sessionId}`)),
+
+  sendDialogueMessage: (charId: string, sessionId: string, content: string, model?: AIModelId) =>
+    unwrap<SendDialogueMessageResponse>(
+      http.post(
+        `/api/v1/characters/${charId}/dialogue/sessions/${sessionId}/messages`,
+        { content, model },
+        { timeout: 180000 }
+      )
+    ),
+
+  listMemories: (charId: string, versionId: string, upToSequence?: number) =>
+    unwrap<{ items: CharacterMemory[] }>(
+      http.get(`/api/v1/characters/${charId}/memories`, {
+        params: {
+          version_id: versionId,
+          up_to_sequence: upToSequence,
+        },
+      })
+    ),
+
+  createMemory: (
+    charId: string,
+    body: {
+      version_id: string
+      source_node_id: string
+      source_sequence: number
+      speaker_identity: string
+      content: string
+    }
+  ) => unwrap<CharacterMemory>(http.post(`/api/v1/characters/${charId}/memories`, body)),
+
+  summarizeMemory: (
+    charId: string,
+    body: { text: string; identity: string; model?: AIModelId }
+  ) =>
+    unwrap<{ content: string }>(
+      http.post(`/api/v1/characters/${charId}/memories/summarize`, body, { timeout: 120000 })
+    ),
+
+  updateMemory: (charId: string, memoryId: string, content: string) =>
+    unwrap<CharacterMemory>(http.patch(`/api/v1/characters/${charId}/memories/${memoryId}`, { content })),
+
+  deleteMemory: (charId: string, memoryId: string) =>
+    unwrap<{ deleted: boolean }>(http.delete(`/api/v1/characters/${charId}/memories/${memoryId}`)),
+
+  applyDialogueImpact: (
+    charId: string,
+    nodeId: string,
+    body: {
+      thoughts: string
+      personality_snapshot: string
+      trait_changes?: TraitChange[]
+      summary?: string
+    }
+  ) =>
+    unwrap<ApplyDialogueImpactResponse>(
+      http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/dialogue/apply-impact`, body)
     ),
 }
 

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	"life-sim/backend/config"
 	"life-sim/backend/model"
 	"life-sim/backend/service"
 )
@@ -422,6 +424,30 @@ func queryInt(c *gin.Context, key string) int {
 	return 0
 }
 
+func (h *CharacterHandler) ListSavedLightNovels(c *gin.Context) {
+	charID := c.Query("character_id")
+	items, err := h.narr.ListSavedLightNovels(charID)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, gin.H{"items": items, "branch": config.CurrentGitBranch()})
+}
+
+func (h *CharacterHandler) GetSavedLightNovel(c *gin.Context) {
+	id := c.Param("id")
+	entry, err := h.narr.GetSavedLightNovel(id)
+	if err != nil {
+		if strings.Contains(err.Error(), "不存在") {
+			Fail(c, http.StatusNotFound, 404, err.Error())
+			return
+		}
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	OK(c, entry)
+}
+
 func (h *CharacterHandler) GenerateLightNovel(c *gin.Context) {
 	charID := c.Param("id")
 	var req model.LightNovelRequest
@@ -436,6 +462,22 @@ func (h *CharacterHandler) GenerateLightNovel(c *gin.Context) {
 		return
 	}
 	OK(c, job)
+}
+
+func (h *CharacterHandler) ListLightNovelJobs(c *gin.Context) {
+	charID := c.Param("id")
+	limit := 30
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	jobs, err := h.narr.ListLightNovelJobs(charID, limit)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, gin.H{"jobs": jobs})
 }
 
 func (h *CharacterHandler) GenerateNodeNarrative(c *gin.Context) {

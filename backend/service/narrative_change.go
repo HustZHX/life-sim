@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -18,6 +19,7 @@ func (s *CharacterService) ApplyNarrativeChange(ctx context.Context, characterID
 	if req.TimelineID == "" {
 		return nil, fmt.Errorf("缺少 timeline_id")
 	}
+	req.TargetNodeCount = store.ClampTargetNodeCount(req.TargetNodeCount)
 
 	ch, err := s.store.GetCharacter(characterID)
 	if err != nil {
@@ -47,7 +49,8 @@ func (s *CharacterService) ApplyNarrativeChange(ctx context.Context, characterID
 		return nil, err
 	}
 
-	job, err := s.store.CreateJob(characterID, "timeline_narrative_change", modelID)
+	jobJSON, _ := json.Marshal(map[string]string{"timeline_id": req.TimelineID})
+	job, err := s.store.CreateJobWithRequest(characterID, "timeline_narrative_change", modelID, string(jobJSON))
 	if err != nil {
 		return nil, err
 	}

@@ -31,12 +31,7 @@ func ParseTimelineRecommendations(raw string) ([]model.TimelineRecommendation, e
 				r.TargetNodeCount = DefaultTargetNodeCount
 			}
 		}
-		if r.TargetNodeCount < 5 {
-			r.TargetNodeCount = 5
-		}
-		if r.TargetNodeCount > 50 {
-			r.TargetNodeCount = 50
-		}
+		r.TargetNodeCount = ClampTargetNodeCount(r.TargetNodeCount)
 		r.StepYears = ComputeStepYears(span, r.TargetNodeCount)
 		out = append(out, r)
 	}

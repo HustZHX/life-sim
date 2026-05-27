@@ -134,31 +134,35 @@ type BranchNode struct {
 	DeathYearSnapshot  int          `json:"death_year_snapshot,omitempty"`
 	DeathCauseSnapshot string       `json:"death_cause_snapshot,omitempty"`
 	IsActive           bool         `json:"is_active"`
+	CreatesBranch      bool         `json:"creates_branch,omitempty"`
 	CreatedAt          time.Time    `json:"created_at"`
 	Children           []BranchNode `json:"children,omitempty"`
 }
 
 // BranchTreeResponse 时间轴分支树。
 type BranchTreeResponse struct {
-	TimelineID       string       `json:"timeline_id"`
-	ActiveVersionID  string       `json:"active_version_id"`
-	Roots            []BranchNode `json:"roots"`
+	TimelineID            string       `json:"timeline_id"`
+	ActiveVersionID       string       `json:"active_version_id"`
+	DisplayActiveBranchID string       `json:"display_active_branch_id,omitempty"`
+	Roots                 []BranchNode `json:"roots"`
 }
 
-// BranchOverviewNodeLite 总览视图节点（仅年份与标题）。
+// BranchOverviewNodeLite 总览视图节点（年份、标题与性格变更摘要）。
 type BranchOverviewNodeLite struct {
-	Sequence int    `json:"sequence"`
-	Year     int    `json:"year"`
-	Title    string `json:"title"`
+	Sequence     int           `json:"sequence"`
+	Year         int           `json:"year"`
+	Title        string        `json:"title"`
+	TraitChanges []TraitChange `json:"trait_changes,omitempty"`
 }
 
 // BranchOverviewEntry 总览中的单条分支。
 type BranchOverviewEntry struct {
-	VersionID         string                 `json:"version_id"`
-	Label             string                 `json:"label"`
-	IsActive          bool                   `json:"is_active"`
-	ForkSequence      int                    `json:"fork_sequence,omitempty"`
-	DeathYearSnapshot int                    `json:"death_year_snapshot,omitempty"`
+	VersionID         string                   `json:"version_id"`
+	Label             string                   `json:"label"`
+	IsActive          bool                     `json:"is_active"`
+	CreatesBranch     bool                     `json:"creates_branch,omitempty"`
+	ForkSequence      int                      `json:"fork_sequence,omitempty"`
+	DeathYearSnapshot int                      `json:"death_year_snapshot,omitempty"`
 	Nodes             []BranchOverviewNodeLite `json:"nodes"`
 }
 
@@ -171,13 +175,32 @@ type BranchOverviewResponse struct {
 
 // Timeline 人物下的独立时间轴实例（可有多条）；版本链归属同一条时间轴。
 type Timeline struct {
-	ID               string    `json:"id"`
-	CharacterID      string    `json:"character_id"`
-	Title            string    `json:"title"`
-	CurrentVersionID string    `json:"current_version_id,omitempty"`
-	NodeCount        int       `json:"node_count,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID               string             `json:"id"`
+	CharacterID      string             `json:"character_id"`
+	Title            string             `json:"title"`
+	CurrentVersionID string             `json:"current_version_id,omitempty"`
+	NodeCount        int                `json:"node_count,omitempty"`
+	VersionCount     int                `json:"version_count,omitempty"`
+	GenerationStatus string             `json:"generation_status,omitempty"` // ready | generating | failed
+	GenerationError  string             `json:"generation_error,omitempty"`
+	ActiveJob        *TimelineActiveJob `json:"active_job,omitempty"`
+	CreatedAt        time.Time          `json:"created_at"`
+	UpdatedAt        time.Time          `json:"updated_at"`
+}
+
+const (
+	TimelineGenReady      = "ready"
+	TimelineGenGenerating = "generating"
+	TimelineGenFailed     = "failed"
+)
+
+// TimelineActiveJob 时间轴关联的进行中任务摘要。
+type TimelineActiveJob struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Status    string `json:"status"`
+	Progress  int    `json:"progress"`
+	StageText string `json:"stage_text,omitempty"`
 }
 
 type Job struct {
@@ -188,6 +211,7 @@ type Job struct {
 	Progress    int       `json:"progress"`
 	StageText   string    `json:"stage_text,omitempty"`
 	Model       string    `json:"model,omitempty"`
+	RequestJSON string    `json:"request_json,omitempty"`
 	Result      string    `json:"result,omitempty"`
 	Error       string    `json:"error,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -198,6 +222,9 @@ const (
 	PatchModeFullCascade       = "full_cascade"
 	PatchModeInnerCurrent      = "inner_current"
 	PatchModeInnerSubsequent   = "inner_subsequent"
+	PatchModeDialogueImpact    = "dialogue_impact"
+
+	DialogueIdentityReader = "命运读者"
 
 	NarrativeStandard = "standard"
 	NarrativeRich     = "rich"
@@ -206,7 +233,21 @@ const (
 	NarrativeKindDiary      = "diary"
 	NarrativeKindLetter     = "letter"
 	NarrativeKindArchive    = "archive"
+
+	LightNovelPersonFirst  = "first"
+	LightNovelPersonSecond = "second"
+	LightNovelPersonThird  = "third"
 )
+
+// NormalizeLightNovelPerson 规范轻小说叙述人称，默认第一人称。
+func NormalizeLightNovelPerson(p string) string {
+	switch p {
+	case LightNovelPersonSecond, LightNovelPersonThird:
+		return p
+	default:
+		return LightNovelPersonFirst
+	}
+}
 
 // NormalizeNarrativeDensity 规范叙事密度，默认 rich（两阶段厚叙事）。
 func NormalizeNarrativeDensity(d string) string {
@@ -365,6 +406,7 @@ type NarrativeArtifact struct {
 	Kind         string    `json:"kind"`
 	FromSequence int       `json:"from_sequence,omitempty"`
 	ToSequence   int       `json:"to_sequence,omitempty"`
+	Person       string    `json:"person,omitempty"`
 	Content      string    `json:"content"`
 	Model        string    `json:"model,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -377,6 +419,36 @@ type NarrativeArtifactQuery struct {
 	Kind         string
 	FromSequence int
 	ToSequence   int
+	Person       string
+}
+
+// SavedLightNovel 磁盘上保存的轻小说（data/light-novels/<branch>/）。
+type SavedLightNovel struct {
+	ID           string    `json:"id"`
+	CharacterID  string    `json:"character_id"`
+	DisplayName  string    `json:"display_name,omitempty"`
+	VersionID    string    `json:"version_id"`
+	FromSequence int       `json:"from_sequence"`
+	ToSequence   int       `json:"to_sequence"`
+	Person       string    `json:"person,omitempty"`
+	Model        string    `json:"model,omitempty"`
+	Branch       string    `json:"branch,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	Content      string    `json:"content"`
+}
+
+// SavedLightNovelMeta 列表项（不含正文）。
+type SavedLightNovelMeta struct {
+	ID           string    `json:"id"`
+	CharacterID  string    `json:"character_id"`
+	DisplayName  string    `json:"display_name,omitempty"`
+	VersionID    string    `json:"version_id"`
+	FromSequence int       `json:"from_sequence"`
+	ToSequence   int       `json:"to_sequence"`
+	Person       string    `json:"person,omitempty"`
+	Model        string    `json:"model,omitempty"`
+	Branch       string    `json:"branch,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // LightNovelRequest 生成轻小说
@@ -385,6 +457,7 @@ type LightNovelRequest struct {
 	VersionID    string `json:"version_id"`
 	FromSequence int    `json:"from_sequence"`
 	ToSequence   int    `json:"to_sequence"`
+	Person       string `json:"person,omitempty"`
 	Force        bool   `json:"force,omitempty"`
 }
 
@@ -392,4 +465,121 @@ type LightNovelRequest struct {
 type NodeNarrativeRequest struct {
 	Model string `json:"model"`
 	Force bool   `json:"force,omitempty"`
+}
+
+// CharacterMemory 人物对用户的持久记忆（绑定版本分支）。
+type CharacterMemory struct {
+	ID              string    `json:"id"`
+	CharacterID     string    `json:"character_id"`
+	VersionID       string    `json:"version_id"`
+	SourceNodeID    string    `json:"source_node_id"`
+	SourceSequence  int       `json:"source_sequence"`
+	SpeakerIdentity string    `json:"speaker_identity"`
+	Content         string    `json:"content"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// DialogueSession 节点对话会话。
+type DialogueSession struct {
+	ID              string    `json:"id"`
+	CharacterID     string    `json:"character_id"`
+	VersionID       string    `json:"version_id"`
+	NodeID          string    `json:"node_id"`
+	NodeSequence    int       `json:"node_sequence"`
+	SpeakerIdentity string    `json:"speaker_identity"`
+	Model           string    `json:"model"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	Messages        []DialogueMessage `json:"messages,omitempty"`
+}
+
+// DialogueSessionSummary 历史对话列表项。
+type DialogueSessionSummary struct {
+	ID              string    `json:"id"`
+	CharacterID     string    `json:"character_id"`
+	VersionID       string    `json:"version_id"`
+	NodeID          string    `json:"node_id"`
+	NodeSequence    int       `json:"node_sequence"`
+	NodeYear        int       `json:"node_year,omitempty"`
+	NodeAge         int       `json:"node_age,omitempty"`
+	NodeTitle       string    `json:"node_title,omitempty"`
+	SpeakerIdentity string    `json:"speaker_identity"`
+	Model           string    `json:"model"`
+	MessageCount    int       `json:"message_count"`
+	LastMessage     string    `json:"last_message,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// DialogueMessage 对话消息。
+type DialogueMessage struct {
+	ID        string    `json:"id"`
+	SessionID string    `json:"session_id"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// DialogueIdentityOption AI 生成的可选身份。
+type DialogueIdentityOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+// PersonalityImpact 对话对性格/思想的影响检测结果。
+type PersonalityImpact struct {
+	HasImpact           bool          `json:"has_impact"`
+	Summary             string        `json:"summary,omitempty"`
+	Thoughts            string        `json:"thoughts,omitempty"`
+	PersonalitySnapshot string        `json:"personality_snapshot,omitempty"`
+	TraitChanges        []TraitChange `json:"trait_changes,omitempty"`
+}
+
+// CreateDialogueSessionRequest 创建对话会话。
+type CreateDialogueSessionRequest struct {
+	Identity string `json:"identity" binding:"required"`
+	Model    string `json:"model"`
+	Resume   bool   `json:"resume"`
+}
+
+// SendDialogueMessageRequest 发送对话消息。
+type SendDialogueMessageRequest struct {
+	Content string `json:"content" binding:"required"`
+	Model   string `json:"model"`
+}
+
+// SendDialogueMessageResponse 发送消息响应。
+type SendDialogueMessageResponse struct {
+	UserMessage      DialogueMessage   `json:"user_message"`
+	AssistantMessage DialogueMessage   `json:"assistant_message"`
+	Impact           *PersonalityImpact `json:"impact,omitempty"`
+}
+
+// CreateMemoryRequest 写入记忆。
+type CreateMemoryRequest struct {
+	VersionID       string `json:"version_id" binding:"required"`
+	SourceNodeID    string `json:"source_node_id" binding:"required"`
+	SourceSequence  int    `json:"source_sequence"`
+	SpeakerIdentity string `json:"speaker_identity"`
+	Content         string `json:"content" binding:"required"`
+}
+
+// UpdateMemoryRequest 更新记忆内容。
+type UpdateMemoryRequest struct {
+	Content string `json:"content" binding:"required"`
+}
+
+// ApplyDialogueImpactRequest 确认性格影响写入节点。
+type ApplyDialogueImpactRequest struct {
+	Thoughts            string        `json:"thoughts" binding:"required"`
+	PersonalitySnapshot string        `json:"personality_snapshot" binding:"required"`
+	TraitChanges        []TraitChange `json:"trait_changes"`
+	Summary             string        `json:"summary"`
+}
+
+// ApplyDialogueImpactResponse 性格影响写入结果。
+type ApplyDialogueImpactResponse struct {
+	VersionID string    `json:"version_id"`
+	Node      *LifeNode `json:"node"`
 }

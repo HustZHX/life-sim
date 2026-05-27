@@ -56,6 +56,7 @@ func BuildBranchTree(versions []model.TimelineVersion, activeVersionID string) [
 			DeathYearSnapshot:  v.DeathYearSnapshot,
 			DeathCauseSnapshot: v.DeathCauseSnapshot,
 			IsActive:           v.ID == activeVersionID,
+			CreatesBranch:      VersionCreatesBranch(v),
 			CreatedAt:          v.CreatedAt,
 		}
 		for _, cid := range childrenOf[id] {

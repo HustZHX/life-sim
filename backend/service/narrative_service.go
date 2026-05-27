@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"life-sim/backend/ai"
+	"life-sim/backend/config"
 	"life-sim/backend/model"
 	"life-sim/backend/store"
 )
@@ -18,6 +20,16 @@ type NarrativeService struct {
 
 func NewNarrativeService(st *store.Store, aiClient *ai.Client) *NarrativeService {
 	return &NarrativeService{store: st, ai: aiClient}
+}
+
+func (s *NarrativeService) ListSavedLightNovels(characterID string) ([]model.SavedLightNovelMeta, error) {
+	dir := config.ResolveLightNovelsDir()
+	return store.ListLightNovelFiles(dir, characterID)
+}
+
+func (s *NarrativeService) GetSavedLightNovel(id string) (*model.SavedLightNovel, error) {
+	dir := config.ResolveLightNovelsDir()
+	return store.GetLightNovelFile(dir, id)
 }
 
 func (s *NarrativeService) GetArtifact(characterID string, q model.NarrativeArtifactQuery) (*model.NarrativeArtifact, error) {
@@ -38,6 +50,7 @@ func (s *NarrativeService) StartLightNovelJob(ctx context.Context, characterID s
 	if req.FromSequence > req.ToSequence {
 		return nil, nil, fmt.Errorf("节点区间无效")
 	}
+	req.Person = model.NormalizeLightNovelPerson(req.Person)
 
 	ch, err := s.store.GetCharacter(characterID)
 	if err != nil {
@@ -55,6 +68,7 @@ func (s *NarrativeService) StartLightNovelJob(ctx context.Context, characterID s
 	q := model.NarrativeArtifactQuery{
 		VersionID: req.VersionID, Kind: model.NarrativeKindLightNovel,
 		NodeID: "", FromSequence: req.FromSequence, ToSequence: req.ToSequence,
+		Person: req.Person,
 	}
 	if !req.Force {
 		if cached, err := s.store.GetNarrativeArtifact(q); err == nil {
@@ -69,7 +83,8 @@ func (s *NarrativeService) StartLightNovelJob(ctx context.Context, characterID s
 		return nil, nil, err
 	}
 
-	job, err := s.store.CreateJob(characterID, "narrative_light_novel", modelID)
+	reqJSON, _ := json.Marshal(req)
+	job, err := s.store.CreateJobWithRequest(characterID, "narrative_light_novel", modelID, string(reqJSON))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -77,6 +92,10 @@ func (s *NarrativeService) StartLightNovelJob(ctx context.Context, characterID s
 	go s.runLightNovelJob(context.Background(), job.ID, characterID, ch.Mode, req, nodes, q)
 
 	return job, nil, nil
+}
+
+func (s *NarrativeService) ListLightNovelJobs(characterID string, limit int) ([]model.Job, error) {
+	return s.store.ListJobsByCharacterAndType(characterID, "narrative_light_novel", limit)
 }
 
 func (s *NarrativeService) StartNodeNarrativeJob(ctx context.Context, characterID, nodeID, kind string, req model.NodeNarrativeRequest) (*model.Job, *model.NarrativeArtifact, error) {
@@ -175,6 +194,7 @@ func (s *NarrativeService) runLightNovelJob(ctx context.Context, jobID, characte
 
 	profileJSON := store.ProfileJSONTimeline(profile)
 	batches := store.BatchLifeNodeSlices(nodes, store.ExpandBatchSize())
+	personDirective := lightNovelPersonDirective(req.Person)
 	var parts []string
 	prevTail := ""
 
@@ -182,8 +202,8 @@ func (s *NarrativeService) runLightNovelJob(ctx context.Context, jobID, characte
 		progress := 10 + (i * 80 / maxInt(len(batches), 1))
 		setJobStage(s.store, jobID, progress, fmt.Sprintf("正在撰写第 %d/%d 章…", i+1, len(batches)))
 
-		user := fmt.Sprintf("人物档案：\n%s\n\n本章节包含的人生节点：\n%s",
-			profileJSON, store.MarshalNodesForNarrative(batch))
+		user := fmt.Sprintf("人物档案：\n%s\n\n本章节包含的人生节点：\n%s\n\n【叙述人称】%s",
+			profileJSON, store.MarshalNodesForNarrative(batch), personDirective)
 		if prevTail != "" {
 			user += fmt.Sprintf("\n\n上一章末尾（须自然衔接）：\n%s", prevTail)
 		}
@@ -217,7 +237,7 @@ func (s *NarrativeService) runLightNovelJob(ctx context.Context, jobID, characte
 	content := strings.Join(parts, "\n\n---\n\n")
 	artifact := &model.NarrativeArtifact{
 		CharacterID: characterID, VersionID: q.VersionID, Kind: q.Kind,
-		FromSequence: q.FromSequence, ToSequence: q.ToSequence,
+		FromSequence: q.FromSequence, ToSequence: q.ToSequence, Person: req.Person,
 		Content: content, Model: job.Model,
 	}
 	if err := s.store.SaveNarrativeArtifact(artifact); err != nil {
@@ -225,8 +245,24 @@ func (s *NarrativeService) runLightNovelJob(ctx context.Context, jobID, characte
 		return
 	}
 
+	branch := config.CurrentGitBranch()
+	savedID, saveErr := store.SaveLightNovelFile(config.ResolveLightNovelsDir(), model.SavedLightNovel{
+		CharacterID:  characterID,
+		DisplayName:  profile.DisplayName,
+		VersionID:    q.VersionID,
+		FromSequence: q.FromSequence,
+		ToSequence:   q.ToSequence,
+		Person:       req.Person,
+		Model:        job.Model,
+		Branch:       branch,
+		Content:      content,
+	})
+	if saveErr != nil {
+		log.Printf("轻小说落盘失败: %v", saveErr)
+	}
+
 	result, _ := json.Marshal(map[string]interface{}{
-		"artifact_id": artifact.ID, "content": content, "cached": false,
+		"artifact_id": artifact.ID, "content": content, "cached": false, "saved_file_id": savedID,
 	})
 	job.Status = model.JobCompleted
 	job.Progress = 100
@@ -322,4 +358,15 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func lightNovelPersonDirective(person string) string {
+	switch model.NormalizeLightNovelPerson(person) {
+	case model.LightNovelPersonSecond:
+		return "全文以第二人称「你」撰写，读者即主人公本人，不用「我」或第三人称。"
+	case model.LightNovelPersonThird:
+		return "全文以第三人称撰写，以主人公姓名或「他/她」指代，不用「我」或「你」。"
+	default:
+		return "全文以第一人称「我」撰写。"
+	}
 }

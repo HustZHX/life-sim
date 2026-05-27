@@ -57,14 +57,16 @@ func main() {
 	aiClient := ai.NewClient(&cfg.DeepSeek, promptDir)
 	charSvc := service.NewCharacterService(st, aiClient, cfg)
 	narrSvc := service.NewNarrativeService(st, aiClient)
+	dialogueSvc := service.NewDialogueService(st, aiClient, charSvc)
 	charHandler := handler.NewCharacterHandler(charSvc, narrSvc)
+	dialogueHandler := handler.NewDialogueHandler(dialogueSvc, charSvc)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     cfg.CORSOrigins,
-		AllowMethods:     []string{"GET", "POST", "PATCH", "OPTIONS"},
+		AllowMethods:     []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept"},
 		AllowCredentials: true,
 	}))
@@ -102,9 +104,26 @@ func main() {
 		v1.GET("/characters/:id/versions/:vid/diff", charHandler.GetVersionDiff)
 		v1.POST("/characters/:id/versions/:vid/rollback", charHandler.Rollback)
 		v1.GET("/characters/:id/narratives", charHandler.GetNarrative)
+		v1.GET("/light-novels", charHandler.ListSavedLightNovels)
+		v1.GET("/light-novels/:id", charHandler.GetSavedLightNovel)
 		v1.POST("/characters/:id/narratives/light-novel", charHandler.GenerateLightNovel)
+		v1.GET("/characters/:id/narratives/light-novel/jobs", charHandler.ListLightNovelJobs)
 		v1.POST("/characters/:id/nodes/:nodeId/narratives/:kind", charHandler.GenerateNodeNarrative)
 		v1.GET("/jobs/:jobId", charHandler.GetJob)
+
+		v1.GET("/characters/:id/nodes/:nodeId/dialogue/identity-options", dialogueHandler.GetSavedIdentityOptions)
+		v1.POST("/characters/:id/nodes/:nodeId/dialogue/identity-options", dialogueHandler.GenerateIdentityOptions)
+		v1.GET("/characters/:id/nodes/:nodeId/dialogue/latest-session", dialogueHandler.GetLatestSessionForNode)
+		v1.POST("/characters/:id/nodes/:nodeId/dialogue/sessions", dialogueHandler.CreateSession)
+		v1.GET("/characters/:id/dialogue/sessions", dialogueHandler.ListSessions)
+		v1.GET("/characters/:id/dialogue/sessions/:sessionId", dialogueHandler.GetSession)
+		v1.POST("/characters/:id/dialogue/sessions/:sessionId/messages", dialogueHandler.SendMessage)
+		v1.POST("/characters/:id/nodes/:nodeId/dialogue/apply-impact", dialogueHandler.ApplyImpact)
+		v1.GET("/characters/:id/memories", dialogueHandler.ListMemories)
+		v1.POST("/characters/:id/memories", dialogueHandler.CreateMemory)
+		v1.POST("/characters/:id/memories/summarize", dialogueHandler.SummarizeMemory)
+		v1.PATCH("/characters/:id/memories/:memoryId", dialogueHandler.UpdateMemory)
+		v1.DELETE("/characters/:id/memories/:memoryId", dialogueHandler.DeleteMemory)
 	}
 
 	addr := ":" + strconv.Itoa(cfg.Server.Port)

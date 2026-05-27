@@ -1,6 +1,7 @@
 export const DEFAULT_TARGET_NODE_COUNT = 20
-export const MIN_TARGET_NODE_COUNT = 8
-export const MAX_TARGET_NODE_COUNT = 40
+/** 余生推演 / 目标节点数粒度 */
+export const MIN_TARGET_NODE_COUNT = 1
+export const MAX_TARGET_NODE_COUNT = 25
 
 /** 档案未标注卒年或仍在世时，用当前年份作为时间轴上界 */
 export function effectiveDeathYear(profile: { birth_year: number; death_year: number }): number {

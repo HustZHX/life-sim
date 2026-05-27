@@ -9,18 +9,19 @@ import (
 )
 
 func (s *Store) GetNarrativeArtifact(q model.NarrativeArtifactQuery) (*model.NarrativeArtifact, error) {
+	person := model.NormalizeLightNovelPerson(q.Person)
 	row := s.db.QueryRow(`
 		SELECT id, character_id, version_id, COALESCE(node_id,''), kind,
-		       from_sequence, to_sequence, content, COALESCE(model,''), created_at
+		       from_sequence, to_sequence, COALESCE(person,'first'), content, COALESCE(model,''), created_at
 		FROM narrative_artifacts
-		WHERE version_id=? AND kind=? AND node_id=? AND from_sequence=? AND to_sequence=?`,
-		q.VersionID, q.Kind, q.NodeID, q.FromSequence, q.ToSequence,
+		WHERE version_id=? AND kind=? AND node_id=? AND from_sequence=? AND to_sequence=? AND COALESCE(person,'first')=?`,
+		q.VersionID, q.Kind, q.NodeID, q.FromSequence, q.ToSequence, person,
 	)
 	var a model.NarrativeArtifact
 	var created string
 	err := row.Scan(
 		&a.ID, &a.CharacterID, &a.VersionID, &a.NodeID, &a.Kind,
-		&a.FromSequence, &a.ToSequence, &a.Content, &a.Model, &created,
+		&a.FromSequence, &a.ToSequence, &a.Person, &a.Content, &a.Model, &created,
 	)
 	if err != nil {
 		return nil, err
@@ -37,23 +38,25 @@ func (s *Store) SaveNarrativeArtifact(a *model.NarrativeArtifact) error {
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = now
 	}
+	a.Person = model.NormalizeLightNovelPerson(a.Person)
 	_, err := s.db.Exec(`
 		INSERT INTO narrative_artifacts
-		  (id, character_id, version_id, node_id, kind, from_sequence, to_sequence, content, model, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(version_id, kind, node_id, from_sequence, to_sequence)
+		  (id, character_id, version_id, node_id, kind, from_sequence, to_sequence, person, content, model, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(version_id, kind, node_id, from_sequence, to_sequence, person)
 		DO UPDATE SET content=excluded.content, model=excluded.model, created_at=excluded.created_at`,
 		a.ID, a.CharacterID, a.VersionID, a.NodeID, a.Kind,
-		a.FromSequence, a.ToSequence, a.Content, a.Model, a.CreatedAt,
+		a.FromSequence, a.ToSequence, a.Person, a.Content, a.Model, a.CreatedAt,
 	)
 	return err
 }
 
 func (s *Store) DeleteNarrativeArtifact(q model.NarrativeArtifactQuery) error {
+	person := model.NormalizeLightNovelPerson(q.Person)
 	res, err := s.db.Exec(`
 		DELETE FROM narrative_artifacts
-		WHERE version_id=? AND kind=? AND node_id=? AND from_sequence=? AND to_sequence=?`,
-		q.VersionID, q.Kind, q.NodeID, q.FromSequence, q.ToSequence,
+		WHERE version_id=? AND kind=? AND node_id=? AND from_sequence=? AND to_sequence=? AND COALESCE(person,'first')=?`,
+		q.VersionID, q.Kind, q.NodeID, q.FromSequence, q.ToSequence, person,
 	)
 	if err != nil {
 		return err

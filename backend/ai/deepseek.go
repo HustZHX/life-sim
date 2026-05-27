@@ -89,6 +89,30 @@ func (c *Client) ChatJSONModel(ctx context.Context, apiModel, systemPrompt, user
 	return c.chatJSONWithModel(ctx, apiModel, systemPrompt, userContent)
 }
 
+// ChatTextModel 自然语言多轮对话（非 JSON 格式）。
+func (c *Client) ChatTextModel(ctx context.Context, apiModel string, messages []ChatMessage) (string, error) {
+	if apiModel == "" {
+		apiModel = c.cfg.ModelFast
+	}
+	reqBody := chatRequest{
+		Model:       apiModel,
+		Messages:    toChatMessages(messages),
+		MaxTokens:   4096,
+		Temperature: 0.8,
+	}
+	content, err := c.doChatWithRetry(ctx, reqBody)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(content), nil
+}
+
+// ChatMessage 对话消息（导出供 service 层组装多轮上下文）。
+type ChatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 func (c *Client) chatJSONWithModel(ctx context.Context, model, systemPrompt, userContent string) (string, error) {
 	reqBody := chatRequest{
 		Model: model,
@@ -105,6 +129,14 @@ func (c *Client) chatJSONWithModel(ctx context.Context, model, systemPrompt, use
 		return "", err
 	}
 	return extractJSON(content), nil
+}
+
+func toChatMessages(msgs []ChatMessage) []chatMessage {
+	out := make([]chatMessage, len(msgs))
+	for i, m := range msgs {
+		out[i] = chatMessage{Role: m.Role, Content: m.Content}
+	}
+	return out
 }
 
 func (c *Client) doChatWithRetry(ctx context.Context, reqBody chatRequest) (string, error) {

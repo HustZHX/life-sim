@@ -7,7 +7,25 @@ import (
 	"life-sim/backend/model"
 )
 
-const DefaultTargetNodeCount = 20
+const (
+	DefaultTargetNodeCount = 20
+	MinTargetNodeCount     = 1
+	MaxTargetNodeCount     = 25
+)
+
+// ClampTargetNodeCount 将目标节点数限制在余生推演粒度 1～25。
+func ClampTargetNodeCount(n int) int {
+	if n <= 0 {
+		return DefaultTargetNodeCount
+	}
+	if n < MinTargetNodeCount {
+		return MinTargetNodeCount
+	}
+	if n > MaxTargetNodeCount {
+		return MaxTargetNodeCount
+	}
+	return n
+}
 
 // TimelineRangeConfig 时间轴生成区间与节点规模。
 type TimelineRangeConfig struct {
@@ -50,15 +68,7 @@ func EffectiveDeathYear(birthYear, deathYear int) int {
 // ResolveTimelineRange 补全并校验时间轴生成区间，按目标节点数推算参考间隔。
 func ResolveTimelineRange(cfg TimelineRangeConfig, profile *model.Profile) (TimelineRangeConfig, error) {
 	out := cfg
-	if out.TargetNodeCount <= 0 {
-		out.TargetNodeCount = DefaultTargetNodeCount
-	}
-	if out.TargetNodeCount < 5 {
-		out.TargetNodeCount = 5
-	}
-	if out.TargetNodeCount > 50 {
-		out.TargetNodeCount = 50
-	}
+	out.TargetNodeCount = ClampTargetNodeCount(out.TargetNodeCount)
 	if profile == nil {
 		return out, fmt.Errorf("档案不存在")
 	}
@@ -85,15 +95,7 @@ func ResolveTimelineRange(cfg TimelineRangeConfig, profile *model.Profile) (Time
 
 // ResolveRegenerateTailRange 推演余生：节点数由用户配置，不与寿命跨度机械对应。
 func ResolveRegenerateTailRange(_anchorYear, _deathYear, targetNodeCount int) (stepYears, targetNodes int) {
-	if targetNodeCount <= 0 {
-		targetNodeCount = DefaultTargetNodeCount
-	}
-	if targetNodeCount < 5 {
-		targetNodeCount = 5
-	}
-	if targetNodeCount > 50 {
-		targetNodeCount = 50
-	}
+	targetNodeCount = ClampTargetNodeCount(targetNodeCount)
 	// 弱提示间隔，非 寿命跨度÷节点数
 	return 3, targetNodeCount
 }

@@ -1,21 +1,30 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { api, pollJob } from '@/api/client'
-import type { AIModelId, BranchNode, BranchOverviewEntry, LifeNode, Timeline } from '@/api/client'
+import { api, pollJob, type SavedLightNovelMeta } from '@/api/client'
+import type { AIModelId, BranchNode, LifeNode, Timeline } from '@/api/client'
 import { DEFAULT_AI_MODEL, modelDisplayLabel } from '@/constants/models'
 import TimelineAxis from '@/components/TimelineAxis.vue'
 import NodeEditor from '@/components/NodeEditor.vue'
 import BranchFlowchart from '@/components/BranchFlowchart.vue'
-import BranchOverview from '@/components/BranchOverview.vue'
 import ProfilePanel from '@/components/ProfilePanel.vue'
 import NarrativeDialog from '@/components/NarrativeDialog.vue'
+import CharacterDialogueDialog from '@/components/CharacterDialogueDialog.vue'
+import LightNovelJobList from '@/components/LightNovelJobList.vue'
 import ModelSelector from '@/components/ModelSelector.vue'
 import type { Profile } from '@/api/client'
 import { copyTextToClipboard, formatTimelineExport } from '@/utils/exportTimelineText'
 import { useNarrativeGenerate } from '@/composables/useNarrativeGenerate'
+import { useLightNovelJobs, type LightNovelJobEntry } from '@/composables/useLightNovelJobs'
 import { DEFAULT_TARGET_NODE_COUNT } from '@/utils/timelineDensity'
+import {
+  LIGHT_NOVEL_PERSON_OPTIONS,
+  lightNovelPersonLabel,
+  type LightNovelPerson,
+} from '@/constants/lightNovelPerson'
+import { timelineJobLabel, versionChangeLabel, isTimelineGenerating } from '@/constants/timelineStatus'
 
 const route = useRoute()
 const router = useRouter()
@@ -34,9 +43,8 @@ const activatingBranchId = ref('')
 const pageLoading = ref(false)
 const showProfile = ref(false)
 const detailPanelOpen = ref(false)
-const viewMode = ref<'timeline' | 'overview'>('timeline')
-const overviewBranches = ref<BranchOverviewEntry[]>([])
-const overviewLoading = ref(false)
+
+const dialogueRef = ref<InstanceType<typeof CharacterDialogueDialog> | null>(null)
 
 const regenVisible = ref(false)
 const regenProgress = ref(0)
@@ -55,14 +63,37 @@ const {
   progress: narrativeProgress,
   statusText: narrativeStatusText,
   close: closeNarrative,
-  regenerate: regenerateNarrative,
-  generateLightNovel,
+  regenerate: regenerateNodeNarrative,
   openNodeNarrative,
 } = narrative
+
+const lightNovelJobs = useLightNovelJobs(charId)
+const {
+  jobs: lightNovelJobList,
+  listVisible: lightNovelListVisible,
+  loading: lightNovelListLoading,
+  activeCount: lightNovelActiveCount,
+  refreshList: refreshLightNovelJobs,
+  submit: submitLightNovelJob,
+} = lightNovelJobs
+
 const lightNovelPickerVisible = ref(false)
+const lightNovelSubmitting = ref(false)
 const lightNovelModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+const lightNovelPerson = ref<LightNovelPerson>('first')
 const lightNovelFrom = ref(0)
 const lightNovelTo = ref(0)
+const lightNovelViewContext = ref<{
+  versionId: string
+  fromSequence: number
+  toSequence: number
+  person: LightNovelPerson
+  model: AIModelId
+} | null>(null)
+const savedNovelsVisible = ref(false)
+const savedNovelsLoading = ref(false)
+const savedNovels = ref<SavedLightNovelMeta[]>([])
+const savedNovelsBranch = ref('')
 
 const narrativeChangeVisible = ref(false)
 const narrativeChangeInstruction = ref('')
@@ -75,6 +106,23 @@ const nodeSequenceOptions = computed(() =>
     label: `${n.sequence}. ${n.year} 年 · ${n.title}`,
   }))
 )
+
+const selectedNodeReadOnly = computed(
+  () => !!selectedNode.value && selectedNode.value.version_id !== currentVersionId.value
+)
+
+const currentTimelineMeta = computed(() =>
+  timelines.value.find((tl) => tl.id === selectedTimelineId.value)
+)
+
+function currentJobStatusText(): string {
+  const job = currentTimelineMeta.value?.active_job
+  if (!job) return ''
+  const label = timelineJobLabel(job.type)
+  if (job.status === 'pending') return `${label} · 排队中`
+  const stage = job.stage_text ? `${job.stage_text} · ` : ''
+  return `${label} · ${stage}${job.progress}%`
+}
 
 function openLightNovelPicker() {
   if (!nodes.value.length || !currentVersionId.value) {
@@ -92,19 +140,144 @@ async function confirmLightNovel() {
     ElMessage.warning('起始节点不能晚于结束节点')
     return
   }
-  lightNovelPickerVisible.value = false
-  await generateLightNovel({
-    type: 'light_novel',
-    characterId: charId,
+  if (!currentVersionId.value) return
+
+  lightNovelSubmitting.value = true
+  try {
+    const ok = await submitLightNovelJob({
+      versionId: currentVersionId.value,
+      fromSequence: lightNovelFrom.value,
+      toSequence: lightNovelTo.value,
+      person: lightNovelPerson.value,
+      model: lightNovelModel.value,
+      onCached: (artifact) => {
+        lightNovelPickerVisible.value = false
+        openLightNovelContent(
+          artifact.content,
+          lightNovelFrom.value,
+          lightNovelTo.value,
+          lightNovelPerson.value
+        )
+        lightNovelViewContext.value = {
+          versionId: currentVersionId.value,
+          fromSequence: lightNovelFrom.value,
+          toSequence: lightNovelTo.value,
+          person: lightNovelPerson.value,
+          model: lightNovelModel.value,
+        }
+      },
+    })
+    if (ok) lightNovelPickerVisible.value = false
+  } finally {
+    lightNovelSubmitting.value = false
+  }
+}
+
+function openLightNovelContent(
+  text: string,
+  fromSequence: number,
+  toSequence: number,
+  person: LightNovelPerson
+) {
+  narrativeTitle.value = `轻小说 · 节点 ${fromSequence}–${toSequence} · ${lightNovelPersonLabel(person)}`
+  narrativeContent.value = text
+  narrativeVisible.value = true
+}
+
+function openLightNovelJobList() {
+  lightNovelListVisible.value = true
+  void refreshLightNovelJobs()
+}
+
+function viewLightNovelJob(entry: LightNovelJobEntry) {
+  if (!entry.content) return
+  openLightNovelContent(entry.content, entry.fromSequence, entry.toSequence, entry.person)
+  lightNovelViewContext.value = {
     versionId: currentVersionId.value,
-    fromSequence: lightNovelFrom.value,
-    toSequence: lightNovelTo.value,
-    model: lightNovelModel.value,
+    fromSequence: entry.fromSequence,
+    toSequence: entry.toSequence,
+    person: entry.person,
+    model: entry.model,
+  }
+}
+
+async function regenerateLightNovel() {
+  const ctx = lightNovelViewContext.value
+  if (!ctx) return
+  narrativeVisible.value = false
+  await submitLightNovelJob({
+    versionId: ctx.versionId,
+    fromSequence: ctx.fromSequence,
+    toSequence: ctx.toSequence,
+    person: ctx.person,
+    model: ctx.model,
+    force: true,
+    onCached: (artifact) => {
+      openLightNovelContent(
+        artifact.content,
+        ctx.fromSequence,
+        ctx.toSequence,
+        ctx.person
+      )
+    },
   })
 }
 
+async function openSavedNovels() {
+  savedNovelsVisible.value = true
+  savedNovelsLoading.value = true
+  try {
+    const res = await api.listSavedLightNovels({ character_id: charId })
+    savedNovels.value = res.items
+    savedNovelsBranch.value = res.branch || ''
+  } catch (e: unknown) {
+    savedNovels.value = []
+    ElMessage.error(e instanceof Error ? e.message : '加载已保存轻小说失败')
+  } finally {
+    savedNovelsLoading.value = false
+  }
+}
+
+async function viewSavedNovel(item: SavedLightNovelMeta) {
+  savedNovelsLoading.value = true
+  try {
+    const full = await api.getSavedLightNovel(item.id)
+    savedNovelsVisible.value = false
+    const person = (full.person as LightNovelPerson) || 'first'
+    openLightNovelContent(full.content, full.from_sequence, full.to_sequence, person)
+    lightNovelViewContext.value = {
+      versionId: full.version_id,
+      fromSequence: full.from_sequence,
+      toSequence: full.to_sequence,
+      person,
+      model: (full.model as AIModelId) || DEFAULT_AI_MODEL,
+    }
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '读取轻小说失败')
+  } finally {
+    savedNovelsLoading.value = false
+  }
+}
+
+function formatSavedNovelTime(iso?: string): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString()
+}
+
 function onNarrativeDialogClose(visible: boolean) {
-  if (!visible) closeNarrative()
+  if (!visible) {
+    closeNarrative()
+    lightNovelViewContext.value = null
+  }
+}
+
+async function onNarrativeRegenerate() {
+  if (lightNovelViewContext.value) {
+    await regenerateLightNovel()
+  } else {
+    await regenerateNodeNarrative()
+  }
 }
 
 function openNarrativeChange() {
@@ -207,7 +380,10 @@ async function load() {
         : Promise.resolve({ timeline_id: '', active_version_id: '', roots: [] as BranchNode[] }),
     ])
     nodes.value = tl.nodes
-    currentTimeline.value = tl.timeline
+    const listMeta = timelines.value.find((t) => t.id === tl.timeline.id)
+    currentTimeline.value = listMeta
+      ? { ...tl.timeline, version_count: listMeta.version_count, active_job: listMeta.active_job }
+      : tl.timeline
     selectedTimelineId.value = tl.timeline.id
     currentVersionId.value = tl.version.id
     profile.value = prof
@@ -215,7 +391,13 @@ async function load() {
     selectedNode.value = null
     detailPanelOpen.value = false
   } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '加载失败')
+    const msg = e instanceof Error ? e.message : '加载失败'
+    if (msg.includes('正在生成') || msg.includes('尚无版本')) {
+      ElMessage.warning('该时间轴正在生成中，请返回列表等待完成')
+      router.replace(`/characters/${charId}`)
+      return
+    }
+    ElMessage.error(msg)
   } finally {
     pageLoading.value = false
   }
@@ -243,6 +425,37 @@ function onSelect(node: LifeNode) {
 
 function closeDetailPanel() {
   detailPanelOpen.value = false
+}
+
+function onOpenDialogue(_model: AIModelId) {
+  if (!selectedNode.value) return
+  dialogueRef.value?.open(
+    charId,
+    selectedNode.value,
+    selectedNode.value.version_id,
+    currentVersionId.value
+  )
+}
+
+function onOpenDialogueHistory() {
+  dialogueRef.value?.openHistory(charId, currentVersionId.value, currentVersionId.value)
+}
+
+async function onDialogueNodeUpdated(payload: { versionId: string; node: LifeNode }) {
+  currentVersionId.value = payload.versionId
+  if (!selectedTimelineId.value) return
+  try {
+    const tl = await api.getTimeline(charId, {
+      timelineId: selectedTimelineId.value,
+      version: payload.versionId,
+    })
+    nodes.value = tl.nodes
+    selectedNode.value = payload.node
+    const branches = await api.listBranches(charId, selectedTimelineId.value)
+    branchRoots.value = branches.roots
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '刷新时间轴失败')
+  }
 }
 
 async function onSave(payload: {
@@ -279,11 +492,13 @@ async function onSave(payload: {
     regenStatus.value = payload.mode === 'full_cascade' ? '推演后续完成' : '更新完成'
     await load()
     const updated = nodes.value.find((n: LifeNode) => n.sequence === selectedNode.value?.sequence)
-    if (updated) selectedNode.value = updated
+    if (updated) {
+      selectedNode.value = updated
+    }
     const msg =
       payload.mode === 'full_cascade'
         ? '已创建新分支并推演后续节点'
-        : '已创建新分支并更新本节点内心/性格'
+        : '已更新本节点（未创建新分支；推演后续才会分叉）'
     ElMessage.success(msg)
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '保存失败')
@@ -296,46 +511,13 @@ async function onSave(payload: {
   }
 }
 
-async function loadOverview() {
-  if (!selectedTimelineId.value) return
-  overviewLoading.value = true
-  try {
-    const res = await api.getBranchOverview(charId, selectedTimelineId.value)
-    overviewBranches.value = res.branches
-    currentVersionId.value = res.active_version_id
-  } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '加载总览失败')
-  } finally {
-    overviewLoading.value = false
-  }
-}
-
-async function enterOverview() {
-  if (!selectedTimelineId.value) {
-    ElMessage.warning('请先选择时间轴')
-    return
-  }
-  viewMode.value = 'overview'
-  detailPanelOpen.value = false
-  await loadOverview()
-}
-
-function exitOverview() {
-  viewMode.value = 'timeline'
-}
-
-async function onActivateBranch(versionId: string, options?: { returnToTimeline?: boolean }) {
+async function onActivateBranch(versionId: string) {
   if (!selectedTimelineId.value) return
   activatingBranchId.value = versionId
   pageLoading.value = true
   try {
     await api.activateBranch(charId, selectedTimelineId.value, versionId)
     await load()
-    if (options?.returnToTimeline !== false) {
-      viewMode.value = 'timeline'
-    } else if (viewMode.value === 'overview') {
-      await loadOverview()
-    }
     ElMessage.success('已切换分支')
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '切换分支失败')
@@ -345,11 +527,11 @@ async function onActivateBranch(versionId: string, options?: { returnToTimeline?
   }
 }
 
-async function onOverviewActivate(versionId: string) {
-  await onActivateBranch(versionId, { returnToTimeline: true })
-}
-
-onMounted(load)
+onMounted(async () => {
+  await load()
+  await refreshLightNovelJobs()
+  lightNovelJobs.startBackgroundPoll()
+})
 </script>
 
 <template>
@@ -358,6 +540,18 @@ onMounted(load)
       <div class="toolbar-left">
         <h2>{{ profile?.display_name || '人生时间轴' }}</h2>
         <p v-if="currentTimeline" class="timeline-subtitle">{{ currentTimeline.title }}</p>
+        <p v-if="currentTimelineMeta?.version_count" class="timeline-meta">
+          版本：{{ versionChangeLabel(currentTimelineMeta.version_count) }}
+        </p>
+        <div v-if="currentTimelineMeta && isTimelineGenerating(currentTimelineMeta)" class="timeline-job-banner">
+          <el-progress
+            :percentage="Math.max(currentTimelineMeta.active_job?.progress ?? 8, 5)"
+            :stroke-width="6"
+            striped
+            striped-flow
+          />
+          <span class="timeline-job-text">{{ currentJobStatusText() }}</span>
+        </div>
         <div class="name-legend">
           <span class="legend-item"><mark class="name-protagonist">主角</mark></span>
           <span class="legend-item"><mark class="name-person">他人</mark></span>
@@ -381,20 +575,18 @@ onMounted(load)
         </el-select>
         <el-button @click="router.push(`/characters/${charId}`)">时间轴列表</el-button>
         <el-button @click="router.push(`/continue/${charId}`)">新建时间轴</el-button>
-        <el-button
-          :type="viewMode === 'overview' ? 'primary' : 'default'"
-          :disabled="!selectedTimelineId || pageLoading"
-          @click="viewMode === 'overview' ? exitOverview() : enterOverview()"
-        >
-          {{ viewMode === 'overview' ? '返回时间轴' : '总览视图' }}
-        </el-button>
         <el-button :disabled="!nodes.length || pageLoading" @click="openExport">导出文字</el-button>
+        <el-button :disabled="pageLoading" @click="onOpenDialogueHistory">历史对话</el-button>
         <el-button :disabled="!nodes.length || pageLoading" @click="openNarrativeChange">
           叙述变更
         </el-button>
         <el-button :disabled="!nodes.length || pageLoading" @click="openLightNovelPicker">
           生成轻小说
         </el-button>
+        <el-badge :value="lightNovelActiveCount" :hidden="!lightNovelActiveCount" type="warning">
+          <el-button :disabled="pageLoading" @click="openLightNovelJobList">生成队列</el-button>
+        </el-badge>
+        <el-button :disabled="pageLoading" @click="openSavedNovels">已保存轻小说</el-button>
         <el-button @click="router.push('/characters')">人物列表</el-button>
         <el-button @click="showProfile = !showProfile">
           {{ showProfile ? '隐藏' : '查看' }}档案
@@ -408,17 +600,7 @@ onMounted(load)
       </div>
     </el-collapse-transition>
 
-    <div v-if="viewMode === 'overview'" class="page-card overview-wrap">
-      <BranchOverview
-        :branches="overviewBranches"
-        :loading="overviewLoading || pageLoading"
-        :activating-id="activatingBranchId"
-        @activate="onOverviewActivate"
-        @back="exitOverview"
-      />
-    </div>
-
-    <div v-else class="timeline-layout" :class="{ 'detail-collapsed': !detailPanelOpen }">
+    <div class="timeline-layout" :class="{ 'detail-collapsed': !detailPanelOpen }">
       <section class="col-timeline">
         <div v-loading="pageLoading" class="page-card timeline-scroll">
           <TimelineAxis
@@ -432,21 +614,25 @@ onMounted(load)
       </section>
 
       <aside v-show="detailPanelOpen" class="col-dock col-dock-editor">
-        <div class="dock-panel page-card">
-          <div class="dock-panel-head">
-            <el-button text type="primary" @click="closeDetailPanel">← 收起详情</el-button>
+        <div class="dock-panel dock-panel--editor page-card">
+          <div class="dock-panel-toolbar">
+            <el-button size="small" :icon="ArrowLeft" @click="closeDetailPanel">收起详情</el-button>
           </div>
-          <NodeEditor
-            :character-id="charId"
-            :node="selectedNode"
-            :profile="profile"
-            :loading="regenVisible"
-            :regen-visible="regenVisible"
-            :regen-progress="regenProgress"
-            :regen-status="regenStatus"
-            @save="onSave"
-            @narrative="(kind, model) => selectedNode && openNodeNarrative(charId, selectedNode, kind, model)"
-          />
+          <div class="dock-panel-body">
+            <NodeEditor
+              :character-id="charId"
+              :node="selectedNode"
+              :profile="profile"
+              :read-only="selectedNodeReadOnly"
+              :loading="regenVisible"
+              :regen-visible="regenVisible"
+              :regen-progress="regenProgress"
+              :regen-status="regenStatus"
+              @save="onSave"
+              @narrative="(kind, model) => selectedNode && openNodeNarrative(charId, selectedNode, kind, model)"
+              @dialogue="onOpenDialogue"
+            />
+          </div>
         </div>
       </aside>
 
@@ -484,7 +670,7 @@ onMounted(load)
           />
         </el-form-item>
         <el-form-item label="后续节点规模">
-          <el-input-number v-model="narrativeChangeTargetNodes" :min="5" :max="50" />
+          <el-input-number v-model="narrativeChangeTargetNodes" :min="1" :max="25" />
         </el-form-item>
         <ModelSelector v-model="narrativeChangeModel" />
       </el-form>
@@ -497,13 +683,58 @@ onMounted(load)
     </el-dialog>
 
     <el-dialog
+      v-model="savedNovelsVisible"
+      :title="savedNovelsBranch ? `已保存轻小说（分支 ${savedNovelsBranch}）` : '已保存轻小说（当前 Git 分支）'"
+      width="min(640px, 92vw)"
+      destroy-on-close
+    >
+      <p class="export-hint">
+        每次生成会新增一条记录（不覆盖旧文件）。文件保存在项目 data/light-novels/&lt;分支名&gt;/ 下。
+      </p>
+      <div v-loading="savedNovelsLoading">
+        <el-empty v-if="!savedNovels.length && !savedNovelsLoading" description="当前分支下暂无已保存轻小说" />
+        <el-table v-else :data="savedNovels" size="small" stripe @row-click="viewSavedNovel">
+          <el-table-column label="节点区间" width="110">
+            <template #default="{ row }">{{ row.from_sequence }}–{{ row.to_sequence }}</template>
+          </el-table-column>
+          <el-table-column label="人称" width="120">
+            <template #default="{ row }">{{ lightNovelPersonLabel(row.person) }}</template>
+          </el-table-column>
+          <el-table-column prop="display_name" label="人物" min-width="100" show-overflow-tooltip />
+          <el-table-column label="保存时间" min-width="150">
+            <template #default="{ row }">{{ formatSavedNovelTime(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="72" align="center">
+            <template #default="{ row }">
+              <el-button link type="primary" @click.stop="viewSavedNovel(row)">查看</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button @click="savedNovelsVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="lightNovelPickerVisible"
       title="生成轻小说"
       width="min(520px, 92vw)"
       destroy-on-close
     >
-      <p class="export-hint">选择人生节点区间，AI 将以第一人称撰写连贯的轻小说章节（超过 5 个节点会自动分章）。</p>
+      <p class="export-hint">选择人生节点区间与叙述人称，任务将在后台生成（超过 5 个节点会自动分章）。</p>
       <el-form label-position="top">
+        <el-form-item label="叙述人称">
+          <el-radio-group v-model="lightNovelPerson">
+            <el-radio
+              v-for="opt in LIGHT_NOVEL_PERSON_OPTIONS"
+              :key="opt.value"
+              :value="opt.value"
+            >
+              {{ opt.label }}
+            </el-radio>
+          </el-radio-group>
+        </el-form-item>
         <el-form-item label="起始节点">
           <el-select v-model="lightNovelFrom" style="width: 100%">
             <el-option
@@ -528,21 +759,35 @@ onMounted(load)
       </el-form>
       <template #footer>
         <el-button @click="lightNovelPickerVisible = false">取消</el-button>
-        <el-button type="primary" :loading="narrativeRunning" @click="confirmLightNovel">
-          开始生成
+        <el-button type="primary" :loading="lightNovelSubmitting" @click="confirmLightNovel">
+          提交后台生成
         </el-button>
       </template>
     </el-dialog>
+
+    <LightNovelJobList
+      v-model="lightNovelListVisible"
+      :jobs="lightNovelJobList"
+      :loading="lightNovelListLoading"
+      @refresh="refreshLightNovelJobs"
+      @view="viewLightNovelJob"
+    />
+
+    <CharacterDialogueDialog
+      ref="dialogueRef"
+      :all-nodes="nodes"
+      @node-updated="onDialogueNodeUpdated"
+    />
 
     <NarrativeDialog
       :model-value="narrativeVisible"
       :title="narrativeTitle"
       :content="narrativeContent"
-      :loading="narrativeRunning"
+      :loading="narrativeRunning && !lightNovelViewContext"
       :progress="narrativeProgress"
       :status-text="narrativeStatusText"
       @update:model-value="onNarrativeDialogClose"
-      @regenerate="regenerateNarrative"
+      @regenerate="onNarrativeRegenerate"
     />
 
     <el-dialog
@@ -569,10 +814,6 @@ onMounted(load)
   max-width: 1500px;
   margin: 0 auto;
 }
-.overview-wrap {
-  padding: 20px;
-  min-height: 480px;
-}
 .toolbar {
   display: flex;
   justify-content: space-between;
@@ -586,6 +827,21 @@ onMounted(load)
   margin: 4px 0 0;
   font-size: 0.85rem;
   color: #909399;
+}
+.timeline-meta {
+  margin: 2px 0 0;
+  font-size: 0.82rem;
+  color: #606266;
+}
+.timeline-job-banner {
+  margin-top: 8px;
+  max-width: 320px;
+}
+.timeline-job-text {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.78rem;
+  color: #e6a23c;
 }
 .toolbar-left {
   display: flex;
@@ -649,37 +905,70 @@ onMounted(load)
  */
 .timeline-layout {
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) 400px 320px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 400px) minmax(0, 300px);
   gap: 16px;
   align-items: stretch;
   transition: grid-template-columns 0.25s ease;
+  width: 100%;
+}
+
+.col-timeline .timeline-scroll {
+  width: 100%;
+  min-width: 0;
+  container-type: inline-size;
 }
 
 .timeline-layout.detail-collapsed {
-  grid-template-columns: minmax(0, 1fr) 300px;
-  max-width: 1100px;
-  margin: 0 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  width: 100%;
+  max-width: none;
+}
+
+.timeline-layout.detail-collapsed .col-timeline {
+  min-width: 0;
 }
 
 .timeline-layout.detail-collapsed .col-timeline .timeline-scroll {
-  padding: 20px 28px 28px;
+  padding: 16px 20px 24px;
+  width: 100%;
+  min-height: calc(100vh - 200px);
+}
+
+.timeline-layout.detail-collapsed .col-dock-side .dock-panel {
+  max-height: calc(100vh - 32px);
 }
 
 .col-timeline {
   min-width: 0;
 }
 
-.dock-panel-head {
+.dock-panel--editor {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.dock-panel-toolbar {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  margin: -4px 0 4px;
-  padding-bottom: 4px;
+  padding: 10px 16px;
   border-bottom: 1px solid #ebeef5;
+  background: #fff;
+  border-radius: 12px 12px 0 0;
   position: sticky;
   top: 0;
-  background: #fff;
-  z-index: 2;
+  z-index: 3;
+}
+
+.dock-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 20px 20px;
 }
 
 .col-dock {
@@ -697,19 +986,29 @@ onMounted(load)
   z-index: 5;
 }
 
+@media (max-width: 1400px) {
+  .timeline-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 340px) minmax(0, 260px);
+    gap: 12px;
+  }
+}
+
 @media (max-width: 1280px) {
   .timeline-layout {
-    grid-template-columns: minmax(0, 1fr) 360px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
   }
   .timeline-layout.detail-collapsed {
-    grid-template-columns: minmax(0, 1fr) 280px;
+    grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
     max-width: none;
   }
   .col-dock-side {
     grid-column: 1 / -1;
   }
   .col-dock-side .dock-panel {
-    max-height: 50vh;
+    max-height: 40vh;
+  }
+  .col-timeline .timeline-scroll {
+    padding: 16px;
   }
 }
 
@@ -718,6 +1017,14 @@ onMounted(load)
   .timeline-layout.detail-collapsed {
     grid-template-columns: 1fr;
     max-width: none;
+    gap: 12px;
+  }
+  .col-timeline .timeline-scroll {
+    padding: 12px;
+    min-height: auto;
+  }
+  .timeline-layout.detail-collapsed .col-timeline .timeline-scroll {
+    min-height: auto;
   }
   .col-dock-editor {
     order: 2;
@@ -728,6 +1035,12 @@ onMounted(load)
   .col-dock .dock-panel {
     position: static;
     max-height: none;
+  }
+  .dock-panel--editor {
+    max-height: none;
+  }
+  .dock-panel-body {
+    overflow: visible;
   }
 }
 </style>

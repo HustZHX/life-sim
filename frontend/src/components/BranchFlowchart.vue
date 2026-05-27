@@ -15,7 +15,7 @@ const emit = defineEmits<{
   activate: [versionId: string]
 }>()
 
-const panelOpen = ref(true)
+const panelOpen = ref(false)
 const collapsedIds = ref<Set<string>>(new Set())
 
 const branchCount = computed(() => countBranches(props.roots))
@@ -59,7 +59,7 @@ function onSelect(b: BranchNode) {
 
     <el-collapse-transition>
       <div v-show="panelOpen" v-loading="loading" class="flow-body">
-        <p class="flow-tip">编辑节点会创建新分支并自动切换；点击卡片可查看其他分支。</p>
+        <p class="flow-tip">推演后续会创建新分支；点击卡片可切换查看其他分支。</p>
         <div v-if="!roots.length" class="flow-empty">暂无分支记录</div>
         <div v-else class="flow-canvas">
           <BranchTreeNode

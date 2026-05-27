@@ -1,16 +1,25 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { ArrowDown } from '@element-plus/icons-vue'
 import JobProgress from '@/components/JobProgress.vue'
 import { copyTextToClipboard } from '@/utils/exportTimelineText'
+import {
+  downloadNarrative,
+  type NarrativeExportFormat,
+} from '@/utils/downloadNarrative'
 
-defineProps<{
+const props = defineProps<{
   modelValue: boolean
   title: string
   content: string
   loading?: boolean
   progress?: number
   statusText?: string
+  /** 轻小说等场景：显示导出下载 */
+  enableExport?: boolean
+  /** 下载文件名（不含扩展名） */
+  exportBaseName?: string
 }>()
 
 const emit = defineEmits<{
@@ -19,6 +28,13 @@ const emit = defineEmits<{
 }>()
 
 const copying = ref(false)
+const exporting = ref(false)
+
+const exportLabels: Record<NarrativeExportFormat, string> = {
+  txt: 'TXT 文本',
+  md: 'Markdown',
+  pdf: 'PDF',
+}
 
 function onClose() {
   emit('update:modelValue', false)
@@ -37,6 +53,23 @@ async function copyContent(text: string) {
     ElMessage.error('复制失败，请手动全选复制')
   } finally {
     copying.value = false
+  }
+}
+
+async function onExport(format: NarrativeExportFormat) {
+  if (!props.content.trim()) {
+    ElMessage.warning('暂无内容可导出')
+    return
+  }
+  exporting.value = true
+  try {
+    const base = props.exportBaseName?.trim() || props.title.trim() || '轻小说'
+    await downloadNarrative(format, props.title, props.content, base)
+    ElMessage.success(`已下载 ${exportLabels[format]} 文件`)
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '导出失败')
+  } finally {
+    exporting.value = false
   }
 }
 </script>
@@ -65,6 +98,24 @@ async function copyContent(text: string) {
       <el-button :loading="copying" :disabled="!content" @click="copyContent(content)">
         复制全部
       </el-button>
+      <el-dropdown
+        v-if="enableExport"
+        trigger="click"
+        :disabled="!content || exporting"
+        @command="onExport"
+      >
+        <el-button type="primary" :loading="exporting">
+          导出下载
+          <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+        </el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="txt">TXT 文本</el-dropdown-item>
+            <el-dropdown-item command="md">Markdown (.md)</el-dropdown-item>
+            <el-dropdown-item command="pdf">PDF 文档</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
       <el-button type="warning" plain :loading="loading" @click="emit('regenerate')">
         重新生成
       </el-button>

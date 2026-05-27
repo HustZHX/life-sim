@@ -111,10 +111,10 @@ async function onGenerateClick() {
       ...timelineConfig.value,
       title: timelineTitle.value.trim() || undefined,
     },
+    background: true,
   })
   if (result.ok) {
-    const query = result.timelineId ? { timeline: result.timelineId } : undefined
-    router.push({ path: `/timeline/${charId}`, query })
+    router.push(`/characters/${charId}`)
   } else {
     await load()
   }

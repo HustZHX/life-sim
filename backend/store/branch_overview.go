@@ -21,11 +21,15 @@ func FlattenBranchTreeDFS(roots []model.BranchNode) []model.BranchNode {
 func NodesToOverviewLite(nodes []model.LifeNode) []model.BranchOverviewNodeLite {
 	out := make([]model.BranchOverviewNodeLite, 0, len(nodes))
 	for _, n := range nodes {
-		out = append(out, model.BranchOverviewNodeLite{
+		lite := model.BranchOverviewNodeLite{
 			Sequence: n.Sequence,
 			Year:     n.Year,
 			Title:    n.Title,
-		})
+		}
+		if len(n.TraitChanges) > 0 {
+			lite.TraitChanges = NormalizeTraitChanges(n.TraitChanges)
+		}
+		out = append(out, lite)
 	}
 	return out
 }

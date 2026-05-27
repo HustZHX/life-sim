@@ -119,10 +119,10 @@ async function onGenerateClick() {
     const result = await confirmAndGenerate(characterId.value, aiModel.value, {
       displayName: profile.value?.display_name,
       config: timelineConfig.value,
+      background: true,
     })
     if (result.ok) {
-      const query = result.timelineId ? { timeline: result.timelineId } : undefined
-      router.push({ path: `/timeline/${characterId.value}`, query })
+      router.push(`/characters/${characterId.value}`)
     }
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '无法启动生成')

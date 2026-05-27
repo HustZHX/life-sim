@@ -2,6 +2,21 @@ package store
 
 import "testing"
 
+func TestClampTargetNodeCount(t *testing.T) {
+	if got := ClampTargetNodeCount(0); got != DefaultTargetNodeCount {
+		t.Fatalf("0 -> default %d, got %d", DefaultTargetNodeCount, got)
+	}
+	if got := ClampTargetNodeCount(1); got != 1 {
+		t.Fatalf("min 1, got %d", got)
+	}
+	if got := ClampTargetNodeCount(25); got != 25 {
+		t.Fatalf("max 25, got %d", got)
+	}
+	if got := ClampTargetNodeCount(100); got != MaxTargetNodeCount {
+		t.Fatalf("clamp max, got %d", got)
+	}
+}
+
 func TestComputeStepYears(t *testing.T) {
 	if got := ComputeStepYears(1000, 20); got != 50 {
 		t.Fatalf("1000y/20 nodes = 50, got %d", got)

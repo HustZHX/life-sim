@@ -364,7 +364,8 @@ func (s *CharacterService) StartTimelineJob(ctx context.Context, characterID str
 		return nil, err
 	}
 
-	job, err := s.store.CreateJob(characterID, "timeline_generate", modelID)
+	jobJSON, _ := json.Marshal(map[string]string{"timeline_id": timelineID})
+	job, err := s.store.CreateJobWithRequest(characterID, "timeline_generate", modelID, string(jobJSON))
 	if err != nil {
 		return nil, err
 	}
@@ -511,7 +512,91 @@ func (s *CharacterService) failJob(job *model.Job, msg string) {
 }
 
 func (s *CharacterService) ListTimelines(characterID string) ([]model.Timeline, error) {
-	return s.store.ListTimelines(characterID)
+	list, err := s.store.ListTimelines(characterID)
+	if err != nil {
+		return nil, err
+	}
+	activeJobs, _ := s.store.ListActiveTimelineJobs(characterID)
+	jobByTimeline := map[string]model.Job{}
+	for _, j := range activeJobs {
+		tid := jobTimelineID(j)
+		if tid == "" {
+			continue
+		}
+		if _, exists := jobByTimeline[tid]; !exists {
+			jobByTimeline[tid] = j
+		}
+	}
+	for i := range list {
+		if n, err := s.store.CountVersionsByTimeline(list[i].ID); err == nil {
+			list[i].VersionCount = n
+		}
+		if j, ok := jobByTimeline[list[i].ID]; ok {
+			list[i].ActiveJob = timelineActiveJobFromJob(j)
+		}
+		s.applyTimelineGenerationStatus(&list[i])
+	}
+	return list, nil
+}
+
+func (s *CharacterService) applyTimelineGenerationStatus(tl *model.Timeline) {
+	if tl.CurrentVersionID != "" {
+		tl.GenerationStatus = model.TimelineGenReady
+		tl.GenerationError = ""
+		return
+	}
+
+	if tl.ActiveJob != nil {
+		tl.GenerationStatus = model.TimelineGenGenerating
+		return
+	}
+
+	lastJob, err := s.store.GetLatestTimelineGenerateJob(tl.ID)
+	if err == nil && lastJob != nil {
+		switch lastJob.Status {
+		case model.JobPending, model.JobRunning:
+			tl.GenerationStatus = model.TimelineGenGenerating
+			tl.ActiveJob = timelineActiveJobFromJob(*lastJob)
+			return
+		case model.JobFailed:
+			tl.GenerationStatus = model.TimelineGenFailed
+			tl.GenerationError = lastJob.Error
+			return
+		}
+	}
+
+	// 有壳无版本且无活跃任务：视为生成中（可能任务刚提交或关联丢失）
+	tl.GenerationStatus = model.TimelineGenGenerating
+}
+
+func jobTimelineID(j model.Job) string {
+	if j.RequestJSON != "" {
+		var req struct {
+			TimelineID string `json:"timeline_id"`
+		}
+		if json.Unmarshal([]byte(j.RequestJSON), &req) == nil && req.TimelineID != "" {
+			return req.TimelineID
+		}
+	}
+	if j.Result != "" {
+		var res struct {
+			TimelineID string `json:"timeline_id"`
+		}
+		if json.Unmarshal([]byte(j.Result), &res) == nil && res.TimelineID != "" {
+			return res.TimelineID
+		}
+	}
+	return ""
+}
+
+func timelineActiveJobFromJob(j model.Job) *model.TimelineActiveJob {
+	return &model.TimelineActiveJob{
+		ID:        j.ID,
+		Type:      j.Type,
+		Status:    j.Status,
+		Progress:  j.Progress,
+		StageText: j.StageText,
+	}
 }
 
 func (s *CharacterService) resolveTimelineScope(ch *model.Character, timelineID string) (string, error) {
@@ -555,7 +640,7 @@ func (s *CharacterService) GetTimeline(characterID, timelineID, versionID string
 		versionID = tl.CurrentVersionID
 	}
 	if versionID == "" {
-		return tl, nil, nil, fmt.Errorf("该时间轴尚无版本")
+		return tl, nil, nil, fmt.Errorf("该时间轴正在生成中，请稍后再试")
 	}
 	version, err := s.store.GetVersion(versionID)
 	if err != nil {
@@ -616,7 +701,8 @@ func (s *CharacterService) PatchNodeAndRegenerate(ctx context.Context, character
 	case model.PatchModeInnerSubsequent:
 		jobType = "node_inner_subsequent"
 	}
-	job, err := s.store.CreateJob(characterID, jobType, req.Model)
+	jobJSON, _ := json.Marshal(map[string]string{"timeline_id": timeline.ID, "node_id": nodeID})
+	job, err := s.store.CreateJobWithRequest(characterID, jobType, req.Model, string(jobJSON))
 	if err != nil {
 		return nil, err
 	}
@@ -698,43 +784,35 @@ func (s *CharacterService) runInnerCurrent(ctx context.Context, jobID, character
 		return
 	}
 
-	newVersionID := uuid.New().String()
-	allNodes := store.CopyNodesWithNewVersion(oldNodes, newVersionID)
-	for i := range allNodes {
-		if allNodes[i].Sequence == edited.Sequence {
-			allNodes[i].Title = edited.Title
-			allNodes[i].Events = edited.Events
-			allNodes[i].Thoughts = thoughts
-			allNodes[i].PersonalitySnapshot = personality
-			allNodes[i].TraitChanges = traits
-			allNodes[i].Entities = entities
-			if scene != nil {
-				allNodes[i].Scene = scene
-			}
+	updated := *edited
+	updated.Thoughts = thoughts
+	updated.PersonalitySnapshot = personality
+	updated.TraitChanges = traits
+	updated.Entities = entities
+	if scene != nil {
+		updated.Scene = scene
+	}
+	if err := s.store.UpdateLifeNode(updated); err != nil {
+		s.failJob(job, err.Error())
+		return
+	}
+
+	newNodes := append([]model.LifeNode(nil), oldNodes...)
+	for i := range newNodes {
+		if newNodes[i].Sequence == edited.Sequence {
+			newNodes[i] = updated
 			break
 		}
 	}
-
-	version := &model.TimelineVersion{
-		ID: newVersionID, CharacterID: characterID, TimelineID: timeline.ID, ParentVersionID: timeline.CurrentVersionID,
-		TriggerNodeID: edited.ID,
-		BranchLabel:   fmt.Sprintf("更新节点 #%d", edited.Sequence+1),
-		ForkSequence:  edited.Sequence,
-		ForkNodeID:    edited.ID,
-		ChangeSummary: fmt.Sprintf("重算节点 #%d 内心与性格", edited.Sequence),
-		CreatedAt:     time.Now(),
-	}
-	if err := s.store.CreateVersion(version); err != nil {
-		s.failJob(job, err.Error())
-		return
-	}
-	if err := s.store.SaveNodes(allNodes); err != nil {
-		s.failJob(job, err.Error())
-		return
-	}
-
-	diff := store.ComputeVersionDiff(oldNodes, allNodes, edited.ID)
-	s.finishRegenerateJob(job, ch, timeline.ID, timeline.CurrentVersionID, newVersionID, diff)
+	diff := store.ComputeVersionDiff(oldNodes, newNodes, edited.ID)
+	diffJSON, _ := json.Marshal(model.VersionDiff{
+		VersionID: timeline.CurrentVersionID, ParentVersionID: timeline.CurrentVersionID, Changes: diff,
+	})
+	job.Status = model.JobCompleted
+	job.Progress = 100
+	job.StageText = "完成"
+	job.Result = string(diffJSON)
+	_ = s.store.UpdateJob(job)
 }
 
 func (s *CharacterService) runInnerSubsequent(ctx context.Context, jobID, characterID string, ch *model.Character, timeline *model.Timeline, locked []model.LifeNode, edited *model.LifeNode, oldNodes []model.LifeNode, modelID string) {
@@ -785,47 +863,42 @@ func (s *CharacterService) runInnerSubsequent(ctx context.Context, jobID, charac
 		return
 	}
 
-	newVersionID := uuid.New().String()
-	allNodes := make([]model.LifeNode, 0, len(oldNodes))
-	for _, n := range locked {
-		nn := n
-		nn.VersionID = newVersionID
-		nn.ID = uuid.New().String()
-		allNodes = append(allNodes, nn)
-	}
-	for _, n := range tail {
-		nn := n
-		nn.VersionID = newVersionID
-		nn.ID = uuid.New().String()
-		if inner, ok := innerMap[n.Sequence]; ok {
-			nn.Thoughts = inner.Thoughts
-			nn.PersonalitySnapshot = inner.PersonalitySnapshot
-			nn.TraitChanges = inner.TraitChanges
-			nn.Entities = inner.Entities
+	allNodes := append([]model.LifeNode(nil), oldNodes...)
+	for i := range allNodes {
+		if allNodes[i].Sequence <= edited.Sequence {
+			if allNodes[i].Sequence == edited.Sequence {
+				allNodes[i].Title = edited.Title
+				allNodes[i].Events = edited.Events
+				allNodes[i].Thoughts = edited.Thoughts
+				allNodes[i].PersonalitySnapshot = edited.PersonalitySnapshot
+			}
+			continue
+		}
+		if inner, ok := innerMap[allNodes[i].Sequence]; ok {
+			allNodes[i].Thoughts = inner.Thoughts
+			allNodes[i].PersonalitySnapshot = inner.PersonalitySnapshot
+			allNodes[i].TraitChanges = inner.TraitChanges
+			allNodes[i].Entities = inner.Entities
 			if inner.Scene != nil {
-				nn.Scene = inner.Scene
+				allNodes[i].Scene = inner.Scene
 			}
 		}
-		allNodes = append(allNodes, nn)
 	}
-
-	version := &model.TimelineVersion{
-		ID: newVersionID, CharacterID: characterID, TimelineID: timeline.ID, ParentVersionID: timeline.CurrentVersionID,
-		TriggerNodeID: edited.ID,
-		ChangeSummary: fmt.Sprintf("重算节点 #%d 之后内心与性格（保留经历）", edited.Sequence),
-		CreatedAt: time.Now(),
-	}
-	if err := s.store.CreateVersion(version); err != nil {
-		s.failJob(job, err.Error())
-		return
-	}
-	if err := s.store.SaveNodes(allNodes); err != nil {
+	versionID := timeline.CurrentVersionID
+	if err := s.store.ReplaceNodesForVersion(versionID, allNodes); err != nil {
 		s.failJob(job, err.Error())
 		return
 	}
 
 	diff := store.ComputeVersionDiff(oldNodes, allNodes, edited.ID)
-	s.finishRegenerateJob(job, ch, timeline.ID, timeline.CurrentVersionID, newVersionID, diff)
+	diffJSON, _ := json.Marshal(model.VersionDiff{
+		VersionID: versionID, ParentVersionID: versionID, Changes: diff,
+	})
+	job.Status = model.JobCompleted
+	job.Progress = 100
+	job.StageText = "完成"
+	job.Result = string(diffJSON)
+	_ = s.store.UpdateJob(job)
 }
 
 func findNodeBySeq(nodes []model.LifeNode, seq int) *model.LifeNode {
@@ -841,6 +914,8 @@ func (s *CharacterService) finishRegenerateJob(job *model.Job, ch *model.Charact
 	if diff == nil {
 		diff = []model.NodeFieldChange{}
 	}
+	_ = s.store.CopyMemoriesWithNewVersion(parentVersionID, newVersionID)
+	_ = s.store.CopyDialogueIdentityPresetsWithNewVersion(parentVersionID, newVersionID)
 	diffJSON, _ := json.Marshal(model.VersionDiff{
 		VersionID: newVersionID, ParentVersionID: parentVersionID, Changes: diff,
 	})
@@ -1055,11 +1130,14 @@ func (s *CharacterService) ListBranches(characterID, timelineID string) (*model.
 	if err != nil {
 		return nil, err
 	}
-	roots := store.BuildBranchTree(versions, tl.CurrentVersionID)
+	prepared := store.PrepareBranchTreeVersions(versions)
+	displayActive := store.ResolveActiveBranchInTree(versions, tl.CurrentVersionID)
+	roots := store.BuildBranchTree(prepared, displayActive)
 	return &model.BranchTreeResponse{
-		TimelineID:      tid,
-		ActiveVersionID: tl.CurrentVersionID,
-		Roots:           roots,
+		TimelineID:            tid,
+		ActiveVersionID:       tl.CurrentVersionID,
+		DisplayActiveBranchID: displayActive,
+		Roots:                 roots,
 	}, nil
 }
 
@@ -1080,12 +1158,19 @@ func (s *CharacterService) GetBranchOverview(characterID, timelineID string) (*m
 	if err != nil {
 		return nil, err
 	}
-	roots := store.BuildBranchTree(versions, tl.CurrentVersionID)
+	byID := make(map[string]model.TimelineVersion, len(versions))
+	for _, v := range versions {
+		byID[v.ID] = v
+	}
+	prepared := store.PrepareBranchTreeVersions(versions)
+	displayActive := store.ResolveActiveBranchInTree(versions, tl.CurrentVersionID)
+	roots := store.BuildBranchTree(prepared, displayActive)
 	flat := store.FlattenBranchTreeDFS(roots)
 
 	branches := make([]model.BranchOverviewEntry, 0, len(flat))
 	for _, b := range flat {
-		nodes, err := s.store.GetNodesByVersion(b.ID)
+		nodeVersionID := store.ResolveOverviewVersionID(versions, b.ID, tl.CurrentVersionID)
+		nodes, err := s.store.GetNodesByVersion(nodeVersionID)
 		if err != nil {
 			return nil, err
 		}
@@ -1096,10 +1181,12 @@ func (s *CharacterService) GetBranchOverview(characterID, timelineID string) (*m
 		if label == "" {
 			label = "分支"
 		}
+		v := byID[b.ID]
 		branches = append(branches, model.BranchOverviewEntry{
 			VersionID:         b.ID,
 			Label:             label,
 			IsActive:          b.IsActive,
+			CreatesBranch:     store.VersionCreatesBranch(v),
 			ForkSequence:      b.ForkSequence,
 			DeathYearSnapshot: b.DeathYearSnapshot,
 			Nodes:             store.NodesToOverviewLite(nodes),
@@ -1124,4 +1211,36 @@ func (s *CharacterService) ActivateBranch(characterID, timelineID, versionID str
 		return nil, fmt.Errorf("版本不属于该时间轴")
 	}
 	return s.Rollback(characterID, versionID)
+}
+
+// ApplyDialogueImpact 将对话检测到的性格/思想变更写入当前节点（不推演后续）。
+func (s *CharacterService) ApplyDialogueImpact(ctx context.Context, characterID, nodeID string, req model.ApplyDialogueImpactRequest) (*model.ApplyDialogueImpactResponse, error) {
+	node, err := s.store.GetNode(nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("节点不存在")
+	}
+	if node.CharacterID != characterID {
+		return nil, fmt.Errorf("节点不属于该人物")
+	}
+	timeline, err := s.store.GetTimelineByVersionID(node.VersionID)
+	if err != nil {
+		return nil, err
+	}
+	if timeline.CurrentVersionID != node.VersionID {
+		return nil, fmt.Errorf("当前不在激活分支，请切换分支后再写入")
+	}
+
+	traits := store.NormalizeTraitChanges(req.TraitChanges)
+	updated := *node
+	updated.Thoughts = req.Thoughts
+	updated.PersonalitySnapshot = req.PersonalitySnapshot
+	updated.TraitChanges = traits
+	if err := s.store.UpdateLifeNode(updated); err != nil {
+		return nil, err
+	}
+
+	return &model.ApplyDialogueImpactResponse{
+		VersionID: timeline.CurrentVersionID,
+		Node:      &updated,
+	}, nil
 }

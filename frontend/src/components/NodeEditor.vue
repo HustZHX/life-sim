@@ -29,6 +29,8 @@ const props = defineProps<{
   regenProgress?: number
   regenStatus?: string
   regenVisible?: boolean
+  /** 非当前激活分支的节点，仅可阅读 */
+  readOnly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -41,6 +43,7 @@ const emit = defineEmits<{
     },
   ]
   narrative: [kind: Exclude<NarrativeKind, 'light_novel'>, model: AIModelId]
+  dialogue: [model: AIModelId]
 }>()
 
 type UiMode = 'read' | 'edit'
@@ -102,6 +105,7 @@ function buildPatch() {
 }
 
 function enterEdit() {
+  if (props.readOnly) return
   if (props.node) syncFormFromNode(props.node)
   uiMode.value = 'edit'
 }
@@ -113,6 +117,10 @@ function cancelEdit() {
 
 function openNarrative(kind: Exclude<NarrativeKind, 'light_novel'>) {
   emit('narrative', kind, model.value)
+}
+
+function openDialogue() {
+  emit('dialogue', model.value)
 }
 
 async function regenerateEventsFromTitle() {
@@ -165,7 +173,7 @@ function deduceRemainingLife() {
         <h3>节点详情 · {{ node.year }} 年</h3>
         <p class="sub-meta">第 {{ node.sequence + 1 }} 节点 · {{ node.age }} 岁</p>
       </div>
-      <div v-if="uiMode === 'read'" class="head-actions">
+      <div v-if="uiMode === 'read' && !readOnly" class="head-actions">
         <el-button type="primary" :icon="EditPen" @click="enterEdit">编辑</el-button>
       </div>
       <div v-else class="head-actions">
@@ -174,6 +182,15 @@ function deduceRemainingLife() {
     </div>
 
     <NodeSceneMeta :scene="node.scene" />
+
+    <el-alert
+      v-if="readOnly"
+      type="info"
+      :closable="false"
+      show-icon
+      title="此节点属于「原本时间轴后续」或其他非当前分支，仅可查看。点击分支列头的「切换到此分支」后可编辑。"
+      class="readonly-alert"
+    />
 
     <!-- 阅读模式 -->
     <div v-if="uiMode === 'read'" class="read-panel">
@@ -221,6 +238,11 @@ function deduceRemainingLife() {
       </div>
 
       <ModelSelector v-model="model" class="read-model" />
+
+      <div class="dialogue-box">
+        <el-button type="primary" @click="openDialogue">与 TA 对话</el-button>
+        <p class="dialogue-hint">在当前时间节点与他/她交谈，可选择身份与模型</p>
+      </div>
 
       <div class="read-toolbar">
         <el-button
@@ -291,6 +313,10 @@ function deduceRemainingLife() {
 
       <ModelSelector v-model="model" />
 
+      <div class="dialogue-box">
+        <el-button type="primary" @click="openDialogue">与 TA 对话</el-button>
+      </div>
+
       <div class="narrative-box">
         <div class="narrative-head">多视角叙事</div>
         <div class="narrative-actions">
@@ -326,7 +352,7 @@ function deduceRemainingLife() {
       </div>
 
       <el-alert
-        title="编辑后可「更新本节点」或「推演后续」；每次保存会创建新分支。"
+        title="「更新本节点」仅修改当前版本；只有「推演后续」才会创建新分支并在左侧图中显示分叉。"
         type="info"
         :closable="false"
         show-icon
@@ -458,6 +484,17 @@ function deduceRemainingLife() {
   border-radius: 8px;
   background: #f5faff;
 }
+.dialogue-box {
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dialogue-hint {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #909399;
+}
 .narrative-head {
   font-weight: 600;
   color: #409eff;
@@ -520,5 +557,8 @@ function deduceRemainingLife() {
 }
 .confirmed-alert {
   margin: 0;
+}
+.readonly-alert {
+  margin-bottom: 12px;
 }
 </style>

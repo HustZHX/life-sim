@@ -26,9 +26,7 @@ export function narrativeKindLabel(kind: NarrativeKind): string {
   }
 }
 
-function isCachedResponse(
-  res: unknown
-): res is NarrativeCachedResponse {
+function isCachedResponse(res: unknown): res is NarrativeCachedResponse {
   return (
     typeof res === 'object' &&
     res !== null &&
@@ -48,15 +46,6 @@ function parseJobContent(result?: string): string {
   }
 }
 
-export interface LightNovelContext {
-  type: 'light_novel'
-  characterId: string
-  versionId: string
-  fromSequence: number
-  toSequence: number
-  model: AIModelId
-}
-
 export interface NodeNarrativeContext {
   type: 'node'
   characterId: string
@@ -67,7 +56,7 @@ export interface NodeNarrativeContext {
   nodeLabel?: string
 }
 
-export type NarrativeContext = LightNovelContext | NodeNarrativeContext
+export type NarrativeContext = NodeNarrativeContext
 
 export function useNarrativeGenerate() {
   const visible = ref(false)
@@ -113,62 +102,12 @@ export function useNarrativeGenerate() {
     return parseJobContent(done.result)
   }
 
-  async function generateLightNovel(
-    ctx: LightNovelContext,
-    options?: { force?: boolean; silentOpen?: boolean }
-  ): Promise<boolean> {
-    const dialogTitle = `轻小说 · 节点 ${ctx.fromSequence}–${ctx.toSequence}`
-    context.value = ctx
-    if (!options?.silentOpen) {
-      title.value = dialogTitle
-      visible.value = true
-      content.value = ''
-    }
-
-    running.value = true
-    progress.value = 5
-    statusText.value = '正在提交任务…'
-
-    try {
-      const res = await api.generateLightNovel(ctx.characterId, {
-        model: ctx.model,
-        version_id: ctx.versionId,
-        from_sequence: ctx.fromSequence,
-        to_sequence: ctx.toSequence,
-        force: options?.force,
-      })
-
-      if (isCachedResponse(res)) {
-        openWithArtifact(res.artifact, ctx, dialogTitle)
-        ElMessage.success('已加载缓存')
-        return true
-      }
-
-      statusText.value = 'AI 正在撰写轻小说'
-      const text = await pollNarrativeJob(res.id, ctx.model)
-      content.value = text
-      title.value = dialogTitle
-      visible.value = true
-      ElMessage.success('轻小说已生成')
-      return true
-    } catch (e: unknown) {
-      ElMessage.error(e instanceof Error ? e.message : '生成失败')
-      if (!content.value) visible.value = false
-      return false
-    } finally {
-      running.value = false
-      if (!visible.value) resetProgress()
-    }
-  }
-
   async function generateNodeNarrative(
     ctx: NodeNarrativeContext,
     options?: { force?: boolean }
   ): Promise<boolean> {
     const kindLabel = narrativeKindLabel(ctx.kind)
-    const dialogTitle = ctx.nodeLabel
-      ? `${kindLabel} · ${ctx.nodeLabel}`
-      : kindLabel
+    const dialogTitle = ctx.nodeLabel ? `${kindLabel} · ${ctx.nodeLabel}` : kindLabel
 
     context.value = ctx
     title.value = dialogTitle
@@ -225,11 +164,7 @@ export function useNarrativeGenerate() {
   async function regenerate() {
     const ctx = context.value
     if (!ctx) return
-    if (ctx.type === 'light_novel') {
-      await generateLightNovel(ctx, { force: true })
-    } else {
-      await generateNodeNarrative(ctx, { force: true })
-    }
+    await generateNodeNarrative(ctx, { force: true })
   }
 
   return {
@@ -241,7 +176,6 @@ export function useNarrativeGenerate() {
     statusText,
     context,
     close,
-    generateLightNovel,
     generateNodeNarrative,
     openNodeNarrative,
     regenerate,
