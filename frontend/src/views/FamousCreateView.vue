@@ -3,12 +3,12 @@ import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api, type Profile, type TimelineConfig } from '@/api/client'
-import { DEFAULT_TARGET_NODE_COUNT } from '@/utils/timelineDensity'
+import { DEFAULT_TARGET_NODE_COUNT, effectiveDeathYear } from '@/utils/timelineDensity'
 import { DEFAULT_AI_MODEL, type AIModelId } from '@/constants/models'
 import { useTimelineGenerate } from '@/composables/useTimelineGenerate'
 import { useAwaitProgress } from '@/composables/useAwaitProgress'
 import CandidateCards from '@/components/CandidateCards.vue'
-import ProfilePanel from '@/components/ProfilePanel.vue'
+import ProfileEditor from '@/components/ProfileEditor.vue'
 import ModelSelector from '@/components/ModelSelector.vue'
 import TimelineConfigPanel from '@/components/TimelineConfigPanel.vue'
 import JobProgress from '@/components/JobProgress.vue'
@@ -21,6 +21,7 @@ const candidates = ref<import('@/api/client').ResolveCandidate[]>([])
 const profile = ref<Profile | null>(null)
 const loading = ref(false)
 const aiModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+const profileModel = ref<AIModelId>(DEFAULT_AI_MODEL)
 const timelineConfig = ref<TimelineConfig>({ target_node_count: DEFAULT_TARGET_NODE_COUNT, start_year: 0, end_year: 0 })
 
 const { jobRunning, progress, statusText, confirmAndGenerate } = useTimelineGenerate()
@@ -85,17 +86,20 @@ async function start() {
 async function onSelect(index: number) {
   loading.value = true
   try {
-    const p = await profileJob.run(() => api.generateProfile(characterId.value), {
-      title: '搜寻人物资料',
-      startText: '正在确认人物身份…',
-      onMid: () => api.confirm(characterId.value, index).then(() => undefined),
-      midText: 'AI 正在搜寻史料、整理人物档案…',
-    })
+    const p = await profileJob.run(
+      () => api.generateProfile(characterId.value, { model: profileModel.value }),
+      {
+        title: '搜寻人物资料',
+        startText: '正在确认人物身份…',
+        onMid: () => api.confirm(characterId.value, index).then(() => undefined),
+        midText: 'AI 正在搜寻史料、整理人物档案…',
+      }
+    )
     profile.value = p
     timelineConfig.value = {
       target_node_count: DEFAULT_TARGET_NODE_COUNT,
       start_year: p.birth_year,
-      end_year: p.death_year,
+      end_year: effectiveDeathYear(p),
     }
     step.value = 3
   } catch (e: unknown) {
@@ -105,13 +109,21 @@ async function onSelect(index: number) {
   }
 }
 
+function onProfileUpdate(p: Profile) {
+  profile.value = p
+  timelineConfig.value.end_year = effectiveDeathYear(p)
+}
+
 async function onGenerateClick() {
   try {
-    const ok = await confirmAndGenerate(characterId.value, aiModel.value, {
+    const result = await confirmAndGenerate(characterId.value, aiModel.value, {
       displayName: profile.value?.display_name,
       config: timelineConfig.value,
     })
-    if (ok) router.push(`/timeline/${characterId.value}`)
+    if (result.ok) {
+      const query = result.timelineId ? { timeline: result.timelineId } : undefined
+      router.push({ path: `/timeline/${characterId.value}`, query })
+    }
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '无法启动生成')
   }
@@ -142,6 +154,7 @@ async function onGenerateClick() {
         :disabled="loading"
         @keyup.enter="start"
       />
+      <ModelSelector v-model="profileModel" style="margin-top: 16px" />
       <el-button type="primary" size="large" :loading="loading" style="margin-top: 16px" @click="start">
         AI 查找候选人
       </el-button>
@@ -154,7 +167,12 @@ async function onGenerateClick() {
 
     <div v-if="step === 3 && profile">
       <h2 class="step-title">人物档案预览</h2>
-      <ProfilePanel :profile="profile" />
+      <ProfileEditor
+        :profile="profile"
+        :character-id="characterId"
+        :model="profileModel"
+        @update:profile="onProfileUpdate"
+      />
       <ModelSelector v-model="aiModel" />
       <TimelineConfigPanel
         v-model="timelineConfig"
@@ -174,4 +192,4 @@ async function onGenerateClick() {
     </div>
   </div>
 </template>
-
+

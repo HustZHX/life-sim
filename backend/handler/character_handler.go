@@ -84,9 +84,52 @@ func (h *CharacterHandler) Confirm(c *gin.Context) {
 	OK(c, ch)
 }
 
+func (h *CharacterHandler) SuggestNames(c *gin.Context) {
+	var req model.SuggestNamesRequest
+	_ = c.ShouldBindJSON(&req)
+	names, err := h.svc.SuggestRandomNames(c.Request.Context(), req)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, gin.H{"names": names})
+}
+
 func (h *CharacterHandler) GenerateProfile(c *gin.Context) {
 	id := c.Param("id")
-	profile, err := h.svc.GenerateProfile(c.Request.Context(), id)
+	var req model.ProfileGenerateRequest
+	_ = c.ShouldBindJSON(&req)
+	profile, err := h.svc.GenerateProfile(c.Request.Context(), id, req)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, profile)
+}
+
+func (h *CharacterHandler) UpdateProfile(c *gin.Context) {
+	id := c.Param("id")
+	var req model.Profile
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+	profile, err := h.svc.UpdateProfile(id, &req)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, profile)
+}
+
+func (h *CharacterHandler) RandomizeProfileField(c *gin.Context) {
+	id := c.Param("id")
+	var req model.ProfileRandomizeFieldRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+	profile, err := h.svc.RandomizeProfileField(c.Request.Context(), id, req)
 	if err != nil {
 		Fail(c, http.StatusInternalServerError, 500, err.Error())
 		return
@@ -149,13 +192,24 @@ func (h *CharacterHandler) GenerateTimeline(c *gin.Context) {
 
 func (h *CharacterHandler) GetTimeline(c *gin.Context) {
 	id := c.Param("id")
+	timelineID := c.Query("timeline_id")
 	version := c.Query("version")
-	nodes, ver, err := h.svc.GetTimeline(id, version)
+	tl, nodes, ver, err := h.svc.GetTimeline(id, timelineID, version)
 	if err != nil {
 		Fail(c, http.StatusNotFound, 404, err.Error())
 		return
 	}
-	OK(c, gin.H{"version": ver, "nodes": nodes})
+	OK(c, gin.H{"timeline": tl, "version": ver, "nodes": nodes})
+}
+
+func (h *CharacterHandler) ListTimelines(c *gin.Context) {
+	id := c.Param("id")
+	list, err := h.svc.ListTimelines(id)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, gin.H{"timelines": list})
 }
 
 func (h *CharacterHandler) GetNode(c *gin.Context) {
@@ -184,9 +238,29 @@ func (h *CharacterHandler) PatchNode(c *gin.Context) {
 	OK(c, job)
 }
 
+func (h *CharacterHandler) PreviewLifespan(c *gin.Context) {
+	charID := c.Param("id")
+	nodeID := c.Param("nodeId")
+	var req model.LifespanPreviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+	resp, err := h.svc.PreviewLifespan(c.Request.Context(), charID, nodeID, req)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, resp)
+}
+
 func (h *CharacterHandler) ListVersions(c *gin.Context) {
 	id := c.Param("id")
-	versions, err := h.svc.ListVersions(id)
+	timelineID := c.Query("timeline_id")
+	if timelineID == "" {
+		timelineID = c.Param("tid")
+	}
+	versions, err := h.svc.ListVersions(id, timelineID)
 	if err != nil {
 		Fail(c, http.StatusInternalServerError, 500, err.Error())
 		return

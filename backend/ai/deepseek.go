@@ -102,15 +102,35 @@ func (c *Client) chatJSONWithModel(ctx context.Context, model, systemPrompt, use
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; attempt < 4; attempt++ {
 		content, err := c.doChat(ctx, reqBody)
 		if err == nil {
 			return extractJSON(content), nil
 		}
 		lastErr = err
+		if !isRetryableNetworkErr(err) || attempt == 3 {
+			break
+		}
 		time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
 	}
+	if isRetryableNetworkErr(lastErr) {
+		return "", fmt.Errorf("无法连接 DeepSeek API（DNS/网络暂时不可用），请检查网络或稍后重试: %w", lastErr)
+	}
 	return "", lastErr
+}
+
+func isRetryableNetworkErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "lookup") ||
+		strings.Contains(msg, "getaddrinfow") ||
+		strings.Contains(msg, "dial tcp") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "i/o timeout")
 }
 
 func (c *Client) doChat(ctx context.Context, reqBody chatRequest) (string, error) {

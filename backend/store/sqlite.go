@@ -109,7 +109,26 @@ CREATE INDEX IF NOT EXISTS idx_versions_char ON timeline_versions(character_id);
 	_, _ = s.db.Exec(`ALTER TABLE life_nodes ADD COLUMN scene_json TEXT DEFAULT '{}'`)
 	_, _ = s.db.Exec(`PRAGMA journal_mode=WAL`)
 	_, _ = s.db.Exec(`PRAGMA busy_timeout=5000`)
-	return nil
+
+	_, _ = s.db.Exec(`ALTER TABLE characters ADD COLUMN current_timeline_id TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE timeline_versions ADD COLUMN timeline_id TEXT DEFAULT ''`)
+
+	_, err = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS timelines (
+  id TEXT PRIMARY KEY,
+  character_id TEXT NOT NULL REFERENCES characters(id),
+  title TEXT NOT NULL DEFAULT '',
+  current_version_id TEXT DEFAULT '',
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_timelines_char ON timelines(character_id);
+CREATE INDEX IF NOT EXISTS idx_versions_timeline ON timeline_versions(timeline_id);
+`)
+	if err != nil {
+		return err
+	}
+	return s.migrateLegacyTimelines()
 }
 
 func (s *Store) CreateCharacter(mode string) (*model.Character, error) {
@@ -130,12 +149,12 @@ func (s *Store) CreateCharacter(mode string) (*model.Character, error) {
 
 func (s *Store) GetCharacter(id string) (*model.Character, error) {
 	row := s.db.QueryRow(
-		`SELECT id, mode, display_name, status, resolve_query, confirmed_identity, current_version_id, created_at, updated_at FROM characters WHERE id = ?`,
+		`SELECT id, mode, display_name, status, resolve_query, confirmed_identity, current_version_id, COALESCE(current_timeline_id,''), created_at, updated_at FROM characters WHERE id = ?`,
 		id,
 	)
 	var c model.Character
 	var created, updated string
-	err := row.Scan(&c.ID, &c.Mode, &c.DisplayName, &c.Status, &c.ResolveQuery, &c.ConfirmedIdentity, &c.CurrentVersionID, &created, &updated)
+	err := row.Scan(&c.ID, &c.Mode, &c.DisplayName, &c.Status, &c.ResolveQuery, &c.ConfirmedIdentity, &c.CurrentVersionID, &c.CurrentTimelineID, &created, &updated)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +204,8 @@ func (s *Store) ListCharacterHistory(limit int) ([]model.CharacterHistoryItem, e
 		       COALESCE((
 		         SELECT COUNT(*) FROM life_nodes ln
 		         WHERE ln.version_id = c.current_version_id AND c.current_version_id != ''
-		       ), 0)
+		       ), 0),
+		       COALESCE((SELECT COUNT(*) FROM timelines t WHERE t.character_id = c.id), 0)
 		FROM characters c
 		LEFT JOIN profiles p ON p.character_id = c.id
 		ORDER BY c.updated_at DESC
@@ -203,7 +223,7 @@ func (s *Store) ListCharacterHistory(limit int) ([]model.CharacterHistoryItem, e
 			&item.ID, &item.Mode, &item.DisplayName, &item.Status, &item.ResolveQuery,
 			&item.CurrentVersionID, &created, &updated,
 			&item.Era, &item.BirthYear, &item.DeathYear, &profileName,
-			&item.NodeCount,
+			&item.NodeCount, &item.TimelineCount,
 		); err != nil {
 			return nil, err
 		}
@@ -226,8 +246,8 @@ func (s *Store) ListCharacterHistory(limit int) ([]model.CharacterHistoryItem, e
 func (s *Store) UpdateCharacter(c *model.Character) error {
 	c.UpdatedAt = time.Now()
 	_, err := s.db.Exec(
-		`UPDATE characters SET display_name=?, status=?, resolve_query=?, confirmed_identity=?, current_version_id=?, updated_at=? WHERE id=?`,
-		c.DisplayName, c.Status, c.ResolveQuery, c.ConfirmedIdentity, c.CurrentVersionID, c.UpdatedAt, c.ID,
+		`UPDATE characters SET display_name=?, status=?, resolve_query=?, confirmed_identity=?, current_version_id=?, current_timeline_id=?, updated_at=? WHERE id=?`,
+		c.DisplayName, c.Status, c.ResolveQuery, c.ConfirmedIdentity, c.CurrentVersionID, c.CurrentTimelineID, c.UpdatedAt, c.ID,
 	)
 	return err
 }
@@ -263,17 +283,21 @@ func (s *Store) GetProfile(characterID string) (*model.Profile, error) {
 
 func (s *Store) CreateVersion(v *model.TimelineVersion) error {
 	_, err := s.db.Exec(
-		`INSERT INTO timeline_versions (id, character_id, parent_version_id, trigger_node_id, change_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		v.ID, v.CharacterID, v.ParentVersionID, v.TriggerNodeID, v.ChangeSummary, v.CreatedAt,
+		`INSERT INTO timeline_versions (id, character_id, timeline_id, parent_version_id, trigger_node_id, change_summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		v.ID, v.CharacterID, v.TimelineID, v.ParentVersionID, v.TriggerNodeID, v.ChangeSummary, v.CreatedAt,
 	)
 	return err
 }
 
-func (s *Store) ListVersions(characterID string) ([]model.TimelineVersion, error) {
-	rows, err := s.db.Query(
-		`SELECT id, character_id, parent_version_id, trigger_node_id, change_summary, created_at FROM timeline_versions WHERE character_id = ? ORDER BY created_at DESC`,
-		characterID,
-	)
+func (s *Store) ListVersions(characterID, timelineID string) ([]model.TimelineVersion, error) {
+	query := `SELECT id, character_id, COALESCE(timeline_id,''), parent_version_id, trigger_node_id, change_summary, created_at FROM timeline_versions WHERE character_id = ?`
+	args := []interface{}{characterID}
+	if timelineID != "" {
+		query += ` AND timeline_id = ?`
+		args = append(args, timelineID)
+	}
+	query += ` ORDER BY created_at DESC`
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +306,7 @@ func (s *Store) ListVersions(characterID string) ([]model.TimelineVersion, error
 	for rows.Next() {
 		var v model.TimelineVersion
 		var created string
-		if err := rows.Scan(&v.ID, &v.CharacterID, &v.ParentVersionID, &v.TriggerNodeID, &v.ChangeSummary, &created); err != nil {
+		if err := rows.Scan(&v.ID, &v.CharacterID, &v.TimelineID, &v.ParentVersionID, &v.TriggerNodeID, &v.ChangeSummary, &created); err != nil {
 			return nil, err
 		}
 		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
@@ -296,12 +320,12 @@ func (s *Store) ListVersions(characterID string) ([]model.TimelineVersion, error
 
 func (s *Store) GetVersion(id string) (*model.TimelineVersion, error) {
 	row := s.db.QueryRow(
-		`SELECT id, character_id, parent_version_id, trigger_node_id, change_summary, created_at FROM timeline_versions WHERE id = ?`,
+		`SELECT id, character_id, COALESCE(timeline_id,''), parent_version_id, trigger_node_id, change_summary, created_at FROM timeline_versions WHERE id = ?`,
 		id,
 	)
 	var v model.TimelineVersion
 	var created string
-	if err := row.Scan(&v.ID, &v.CharacterID, &v.ParentVersionID, &v.TriggerNodeID, &v.ChangeSummary, &created); err != nil {
+	if err := row.Scan(&v.ID, &v.CharacterID, &v.TimelineID, &v.ParentVersionID, &v.TriggerNodeID, &v.ChangeSummary, &created); err != nil {
 		return nil, err
 	}
 	v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
@@ -544,7 +568,7 @@ func ParseTimelineNodes(raw string, characterID, versionID, protagonistName stri
 			Events              string              `json:"events"`
 			Thoughts            string              `json:"thoughts"`
 			PersonalitySnapshot string              `json:"personality_snapshot"`
-			TraitChanges        []model.TraitChange `json:"trait_changes"`
+			TraitChanges        json.RawMessage     `json:"trait_changes"`
 			Entities            *model.NodeEntities `json:"entities"`
 			Scene               *model.NodeScene    `json:"scene"`
 		} `json:"nodes"`
@@ -554,6 +578,10 @@ func ParseTimelineNodes(raw string, characterID, versionID, protagonistName stri
 	}
 	nodes := make([]model.LifeNode, 0, len(resp.Nodes))
 	for _, n := range resp.Nodes {
+		traits, err := ParseTraitChangesJSON(n.TraitChanges)
+		if err != nil {
+			return nil, err
+		}
 		nodes = append(nodes, model.LifeNode{
 			ID:                  uuid.New().String(),
 			CharacterID:         characterID,
@@ -565,7 +593,7 @@ func ParseTimelineNodes(raw string, characterID, versionID, protagonistName stri
 			Events:              n.Events,
 			Thoughts:            n.Thoughts,
 			PersonalitySnapshot: n.PersonalitySnapshot,
-			TraitChanges:        NormalizeTraitChanges(n.TraitChanges),
+			TraitChanges:        traits,
 			Entities:            NormalizeNodeEntities(n.Entities, protagonistName),
 			Scene:               NormalizeNodeScene(n.Scene),
 		})
@@ -582,14 +610,18 @@ func ParseInnerCurrent(raw string, protagonistName string) (thoughts, personalit
 	var resp struct {
 		Thoughts            string              `json:"thoughts"`
 		PersonalitySnapshot string              `json:"personality_snapshot"`
-		TraitChanges        []model.TraitChange `json:"trait_changes"`
+		TraitChanges        json.RawMessage     `json:"trait_changes"`
 		Entities            *model.NodeEntities `json:"entities"`
 		Scene               *model.NodeScene    `json:"scene"`
 	}
 	if err = json.Unmarshal([]byte(raw), &resp); err != nil {
 		return
 	}
-	return resp.Thoughts, resp.PersonalitySnapshot, NormalizeTraitChanges(resp.TraitChanges), NormalizeNodeEntities(resp.Entities, protagonistName), NormalizeNodeScene(resp.Scene), nil
+	traits, err := ParseTraitChangesJSON(resp.TraitChanges)
+	if err != nil {
+		return
+	}
+	return resp.Thoughts, resp.PersonalitySnapshot, traits, NormalizeNodeEntities(resp.Entities, protagonistName), NormalizeNodeScene(resp.Scene), nil
 }
 
 type InnerSubsequentPatch struct {
@@ -606,7 +638,7 @@ func ParseInnerSubsequent(raw string, protagonistName string) (map[int]InnerSubs
 			Sequence            int                 `json:"sequence"`
 			Thoughts            string              `json:"thoughts"`
 			PersonalitySnapshot string              `json:"personality_snapshot"`
-			TraitChanges        []model.TraitChange `json:"trait_changes"`
+			TraitChanges        json.RawMessage     `json:"trait_changes"`
 			Entities            *model.NodeEntities `json:"entities"`
 			Scene               *model.NodeScene    `json:"scene"`
 		} `json:"nodes"`
@@ -616,10 +648,14 @@ func ParseInnerSubsequent(raw string, protagonistName string) (map[int]InnerSubs
 	}
 	m := make(map[int]InnerSubsequentPatch, len(resp.Nodes))
 	for _, n := range resp.Nodes {
+		traits, err := ParseTraitChangesJSON(n.TraitChanges)
+		if err != nil {
+			return nil, err
+		}
 		m[n.Sequence] = InnerSubsequentPatch{
 			Thoughts:            n.Thoughts,
 			PersonalitySnapshot: n.PersonalitySnapshot,
-			TraitChanges:        NormalizeTraitChanges(n.TraitChanges),
+			TraitChanges:        traits,
 			Entities:            NormalizeNodeEntities(n.Entities, protagonistName),
 			Scene:               NormalizeNodeScene(n.Scene),
 		}

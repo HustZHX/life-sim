@@ -4,7 +4,7 @@ import { DEFAULT_AI_MODEL } from '@/constants/models'
 
 export type { AIModelId }
 
-const http = axios.create({ baseURL: '' })
+const http = axios.create({ baseURL: '', timeout: 60000 })
 
 export interface ApiResponse<T> {
   code: number
@@ -18,6 +18,17 @@ export interface Character {
   display_name: string
   status: string
   current_version_id?: string
+  current_timeline_id?: string
+}
+
+export interface Timeline {
+  id: string
+  character_id: string
+  title: string
+  current_version_id?: string
+  node_count?: number
+  created_at: string
+  updated_at: string
 }
 
 export interface HistoryItem {
@@ -30,6 +41,7 @@ export interface HistoryItem {
   birth_year?: number
   death_year?: number
   node_count: number
+  timeline_count?: number
   created_at: string
   updated_at: string
 }
@@ -109,6 +121,7 @@ export interface LifeNode {
 export interface TimelineVersion {
   id: string
   character_id: string
+  timeline_id?: string
   parent_version_id?: string
   trigger_node_id?: string
   change_summary?: string
@@ -137,6 +150,8 @@ export interface AIModel {
 }
 
 export interface TimelineConfig {
+  title?: string
+  instructions?: string
   target_node_count: number
   start_year: number
   end_year: number
@@ -162,6 +177,21 @@ export interface PatchNodePayload {
   mode: 'full_cascade' | 'inner_current' | 'inner_subsequent'
   model: AIModelId
   target_node_count?: number
+  confirmed_death_year?: number
+  confirmed_death_cause?: string
+}
+
+export interface LifespanPreview {
+  death_year: number
+  death_cause: string
+  reasoning: string
+  health_notes?: string
+}
+
+export interface LifespanPreviewResponse {
+  current_death_year: number
+  anchor_year: number
+  preview: LifespanPreview
 }
 
 export interface NodeFieldChange {
@@ -197,6 +227,13 @@ export const api = {
   listModels: () =>
     unwrap<{ models: AIModel[] }>(http.get('/api/v1/models')),
 
+  suggestNames: (body: {
+    model?: AIModelId
+    background?: string
+    introduction?: string
+  }) =>
+    unwrap<{ names: string[] }>(http.post('/api/v1/suggest-names', body)),
+
   listHistory: (limit = 100) =>
     unwrap<{ items: HistoryItem[]; total: number }>(
       http.get('/api/v1/history', { params: { limit } })
@@ -218,8 +255,31 @@ export const api = {
       http.post(`/api/v1/characters/${id}/confirm`, { candidate_index: candidateIndex })
     ),
 
-  generateProfile: (id: string) =>
-    unwrap<Profile>(http.post(`/api/v1/characters/${id}/profile/generate`)),
+  generateProfile: (
+    id: string,
+    options?: {
+      model?: AIModelId
+      display_name?: string
+      background?: string
+      introduction?: string
+    }
+  ) =>
+    unwrap<Profile>(
+      http.post(`/api/v1/characters/${id}/profile/generate`, {
+        model: options?.model,
+        display_name: options?.display_name,
+        background: options?.background,
+        introduction: options?.introduction,
+      })
+    ),
+
+  updateProfile: (id: string, profile: Profile) =>
+    unwrap<Profile>(http.patch(`/api/v1/characters/${id}/profile`, profile)),
+
+  randomizeProfileField: (id: string, field: string, model: AIModelId = DEFAULT_AI_MODEL) =>
+    unwrap<Profile>(
+      http.post(`/api/v1/characters/${id}/profile/randomize-field`, { field, model })
+    ),
 
   importTemplate: (id: string, famousQuery: string) =>
     unwrap<Profile>(
@@ -239,30 +299,54 @@ export const api = {
     unwrap<Job>(
       http.post(`/api/v1/characters/${id}/timeline/generate`, {
         model,
+        title: config?.title,
+        instructions: config?.instructions,
         target_node_count: config?.target_node_count,
         start_year: config?.start_year,
         end_year: config?.end_year,
       })
     ),
 
+  listTimelines: (id: string) =>
+    unwrap<{ timelines: Timeline[] }>(http.get(`/api/v1/characters/${id}/timelines`)),
+
   recommendTimeline: (id: string, model: AIModelId = DEFAULT_AI_MODEL) =>
     unwrap<{ recommendations: TimelineRecommendation[] }>(
       http.post(`/api/v1/characters/${id}/timeline/recommendations`, { model })
     ),
 
-  getTimeline: (id: string, version = 'latest') =>
-    unwrap<{ version: TimelineVersion; nodes: LifeNode[] }>(
-      http.get(`/api/v1/characters/${id}/timeline`, { params: { version } })
+  getTimeline: (id: string, options?: { timelineId?: string; version?: string }) =>
+    unwrap<{ timeline: Timeline; version: TimelineVersion; nodes: LifeNode[] }>(
+      http.get(`/api/v1/characters/${id}/timeline`, {
+        params: {
+          timeline_id: options?.timelineId,
+          version: options?.version,
+        },
+      })
     ),
 
   patchNode: (charId: string, nodeId: string, body: PatchNodePayload) =>
     unwrap<Job>(http.patch(`/api/v1/characters/${charId}/nodes/${nodeId}`, body)),
 
+  previewLifespan: (
+    charId: string,
+    nodeId: string,
+    body: Pick<
+      PatchNodePayload,
+      'title' | 'events' | 'thoughts' | 'personality_snapshot' | 'model'
+    >
+  ) =>
+    unwrap<LifespanPreviewResponse>(
+      http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/lifespan/preview`, body)
+    ),
+
   getJob: (jobId: string) => unwrap<Job>(http.get(`/api/v1/jobs/${jobId}`)),
 
-  listVersions: (id: string) =>
+  listVersions: (id: string, timelineId?: string) =>
     unwrap<{ versions: TimelineVersion[] }>(
-      http.get(`/api/v1/characters/${id}/versions`)
+      timelineId
+        ? http.get(`/api/v1/characters/${id}/timelines/${timelineId}/versions`)
+        : http.get(`/api/v1/characters/${id}/versions`)
     ),
 
   getVersionDiff: (charId: string, vid: string) =>

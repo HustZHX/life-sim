@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api, pollJob } from '@/api/client'
-import type { AIModelId, LifeNode, NodeFieldChange, TimelineVersion } from '@/api/client'
+import type { AIModelId, LifeNode, NodeFieldChange, Timeline, TimelineVersion } from '@/api/client'
 import { modelDisplayLabel } from '@/constants/models'
 import TimelineAxis from '@/components/TimelineAxis.vue'
 import NodeEditor from '@/components/NodeEditor.vue'
@@ -11,6 +11,7 @@ import ChangeDiffPanel from '@/components/ChangeDiffPanel.vue'
 import VersionHistory from '@/components/VersionHistory.vue'
 import ProfilePanel from '@/components/ProfilePanel.vue'
 import type { Profile } from '@/api/client'
+import { copyTextToClipboard, formatTimelineExport } from '@/utils/exportTimelineText'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,6 +19,9 @@ const charId = route.params.id as string
 
 const nodes = ref<LifeNode[]>([])
 const profile = ref<Profile | null>(null)
+const timelines = ref<Timeline[]>([])
+const currentTimeline = ref<Timeline | null>(null)
+const selectedTimelineId = ref('')
 const selectedNode = ref<LifeNode | null>(null)
 const versions = ref<TimelineVersion[]>([])
 const currentVersionId = ref('')
@@ -32,24 +36,82 @@ const regenVisible = ref(false)
 const regenProgress = ref(0)
 const regenStatus = ref('')
 
+const exportVisible = ref(false)
+const exportText = ref('')
+const exportCopying = ref(false)
+
+function openExport() {
+  if (!nodes.value.length) {
+    ElMessage.warning('暂无节点可导出')
+    return
+  }
+  exportText.value = formatTimelineExport(profile.value, nodes.value)
+  exportVisible.value = true
+}
+
+async function copyExport() {
+  if (!exportText.value) return
+  exportCopying.value = true
+  try {
+    await copyTextToClipboard(exportText.value)
+    ElMessage.success('已复制到剪贴板')
+  } catch {
+    ElMessage.error('复制失败，请手动全选复制')
+  } finally {
+    exportCopying.value = false
+  }
+}
+
 async function load() {
   pageLoading.value = true
   try {
+    const tlRes = await api.listTimelines(charId).catch(() => ({ timelines: [] as Timeline[] }))
+    timelines.value = tlRes.timelines
+    if (!tlRes.timelines.length) {
+      router.replace(`/continue/${charId}`)
+      return
+    }
+
+    let timelineId = (route.query.timeline as string) || selectedTimelineId.value
+    if (!timelineId && timelines.value.length) {
+      timelineId = timelines.value[0].id
+    }
+
     const [tl, prof, vers] = await Promise.all([
-      api.getTimeline(charId),
+      api.getTimeline(charId, { timelineId }),
       api.getProfile(charId).catch(() => null),
-      api.listVersions(charId),
+      timelineId ? api.listVersions(charId, timelineId) : Promise.resolve({ versions: [] }),
     ])
     nodes.value = tl.nodes
+    currentTimeline.value = tl.timeline
+    selectedTimelineId.value = tl.timeline.id
     currentVersionId.value = tl.version.id
     profile.value = prof
     versions.value = vers.versions
+    selectedNode.value = null
+    changes.value = []
+    diffVersionId.value = ''
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '加载失败')
   } finally {
     pageLoading.value = false
   }
 }
+
+function onTimelineChange(timelineId: string) {
+  router.replace({ path: `/timeline/${charId}`, query: { timeline: timelineId } })
+}
+
+watch(
+  () => route.query.timeline,
+  (tid) => {
+    const next = typeof tid === 'string' ? tid : ''
+    if (next && next !== selectedTimelineId.value) {
+      selectedTimelineId.value = next
+      load()
+    }
+  }
+)
 
 function onSelect(node: LifeNode) {
   selectedNode.value = node
@@ -60,6 +122,8 @@ async function onSave(payload: {
   model: AIModelId
   patch: Record<string, string>
   target_node_count?: number
+  confirmed_death_year?: number
+  confirmed_death_cause?: string
 }) {
   if (!selectedNode.value) return
   regenVisible.value = true
@@ -75,6 +139,8 @@ async function onSave(payload: {
       mode: payload.mode as 'full_cascade' | 'inner_current' | 'inner_subsequent',
       model: payload.model,
       target_node_count: payload.target_node_count,
+      confirmed_death_year: payload.confirmed_death_year,
+      confirmed_death_cause: payload.confirmed_death_cause,
     })
     const done = await pollJob(job.id, (j) => {
       regenProgress.value = Math.max(j.progress, 5)
@@ -159,6 +225,7 @@ onMounted(load)
     <div class="toolbar">
       <div class="toolbar-left">
         <h2>{{ profile?.display_name || '人生时间轴' }}</h2>
+        <p v-if="currentTimeline" class="timeline-subtitle">{{ currentTimeline.title }}</p>
         <div class="name-legend">
           <span class="legend-item"><mark class="name-protagonist">主角</mark></span>
           <span class="legend-item"><mark class="name-person">他人</mark></span>
@@ -166,6 +233,22 @@ onMounted(load)
         </div>
       </div>
       <div class="toolbar-actions">
+        <el-select
+          v-if="timelines.length"
+          :model-value="selectedTimelineId"
+          placeholder="选择时间轴"
+          style="width: min(280px, 40vw)"
+          @change="onTimelineChange"
+        >
+          <el-option
+            v-for="tl in timelines"
+            :key="tl.id"
+            :label="`${tl.title}（${tl.node_count ?? 0} 节点）`"
+            :value="tl.id"
+          />
+        </el-select>
+        <el-button @click="router.push(`/continue/${charId}`)">新建时间轴</el-button>
+        <el-button :disabled="!nodes.length || pageLoading" @click="openExport">导出文字</el-button>
         <el-button @click="router.push('/history')">生成历史</el-button>
         <el-button @click="showProfile = !showProfile">
           {{ showProfile ? '隐藏' : '查看' }}档案
@@ -194,6 +277,7 @@ onMounted(load)
       <aside class="col-dock col-dock-editor">
         <div class="dock-panel page-card">
           <NodeEditor
+            :character-id="charId"
             :node="selectedNode"
             :profile="profile"
             :loading="regenVisible"
@@ -223,6 +307,21 @@ onMounted(load)
         </div>
       </aside>
     </div>
+
+    <el-dialog
+      v-model="exportVisible"
+      title="导出人生时间轴"
+      width="min(720px, 92vw)"
+      class="export-dialog"
+      destroy-on-close
+    >
+      <p class="export-hint">以下为当前版本全部节点的纯文本，可复制到笔记或文档中。</p>
+      <el-input v-model="exportText" type="textarea" :rows="18" readonly class="export-textarea" />
+      <template #footer>
+        <el-button @click="exportVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="exportCopying" @click="copyExport">复制全部</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -241,6 +340,11 @@ onMounted(load)
 }
 .toolbar h2 {
   margin: 0;
+}
+.timeline-subtitle {
+  margin: 4px 0 0;
+  font-size: 0.85rem;
+  color: #909399;
 }
 .toolbar-left {
   display: flex;
@@ -283,6 +387,17 @@ onMounted(load)
 .toolbar-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+}
+.export-hint {
+  margin: 0 0 12px;
+  font-size: 0.85rem;
+  color: #909399;
+}
+.export-textarea :deep(textarea) {
+  font-family: 'Consolas', 'PingFang SC', 'Microsoft YaHei', monospace;
+  font-size: 0.85rem;
+  line-height: 1.55;
 }
 .profile-block {
   margin-bottom: 16px;

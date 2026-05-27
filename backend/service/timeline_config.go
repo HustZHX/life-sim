@@ -83,3 +83,52 @@ func (s *CharacterService) recalculateLifespan(ctx context.Context, profile *mod
 	}
 	return store.ParseLifespanRecalc(raw)
 }
+
+func (s *CharacterService) PreviewLifespan(ctx context.Context, characterID, nodeID string, req model.LifespanPreviewRequest) (*model.LifespanPreviewResponse, error) {
+	node, err := s.store.GetNode(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	if node.CharacterID != characterID {
+		return nil, fmt.Errorf("节点不属于该角色")
+	}
+	req.Model = ai.NormalizeModelID(req.Model)
+	if _, err := s.resolveAPIModel(req.Model); err != nil {
+		return nil, err
+	}
+
+	node.Title = req.Title
+	node.Events = req.Events
+	node.Thoughts = req.Thoughts
+	node.PersonalitySnapshot = req.PersonalitySnapshot
+
+	timeline, err := s.store.GetTimelineByVersionID(node.VersionID)
+	if err != nil {
+		return nil, fmt.Errorf("无法定位节点所属时间轴")
+	}
+	oldNodes, err := s.store.GetNodesByVersion(timeline.CurrentVersionID)
+	if err != nil {
+		return nil, err
+	}
+	locked := store.FilterNodesFromSequence(oldNodes, node.Sequence)
+	for i := range locked {
+		if locked[i].ID == node.ID {
+			locked[i] = *node
+			break
+		}
+	}
+
+	profile, err := s.store.GetProfile(characterID)
+	if err != nil {
+		return nil, err
+	}
+	preview, err := s.recalculateLifespan(ctx, profile, locked, node, req.Model)
+	if err != nil {
+		return nil, err
+	}
+	return &model.LifespanPreviewResponse{
+		CurrentDeathYear: profile.DeathYear,
+		AnchorYear:       node.Year,
+		Preview:          *preview,
+	}, nil
+}

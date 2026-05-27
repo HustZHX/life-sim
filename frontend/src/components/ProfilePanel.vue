@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Profile } from '@/api/client'
+import { formatProfileLifeSpan } from '@/utils/timelineDensity'
 
 defineProps<{
   profile: Profile
@@ -9,7 +10,7 @@ defineProps<{
 <template>
   <el-descriptions :title="profile.display_name" :column="2" border>
     <el-descriptions-item label="生卒">
-      {{ profile.birth_year }} — {{ profile.death_year }}
+      {{ formatProfileLifeSpan(profile) }}
     </el-descriptions-item>
     <el-descriptions-item label="时代">{{ profile.era }}</el-descriptions-item>
     <el-descriptions-item label="国籍">{{ profile.nationality }}</el-descriptions-item>

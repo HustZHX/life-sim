@@ -109,6 +109,11 @@ onMounted(load)
           {{ row.node_count > 0 ? row.node_count : '—' }}
         </template>
       </el-table-column>
+      <el-table-column label="时间轴" width="80" align="center">
+        <template #default="{ row }">
+          {{ row.timeline_count && row.timeline_count > 0 ? row.timeline_count : '—' }}
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="130">
         <template #default="{ row }">
           <el-tag

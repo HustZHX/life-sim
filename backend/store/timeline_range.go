@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"time"
 
 	"life-sim/backend/model"
 )
@@ -31,6 +32,21 @@ func ComputeStepYears(spanYears, targetNodes int) int {
 	return step
 }
 
+// EffectiveDeathYear 档案未标注卒年或仍在世时，用当前年份作为时间轴上界。
+func EffectiveDeathYear(birthYear, deathYear int) int {
+	if deathYear > birthYear {
+		return deathYear
+	}
+	y := time.Now().Year()
+	if y > birthYear {
+		return y
+	}
+	if birthYear > 0 {
+		return birthYear + 1
+	}
+	return y
+}
+
 // ResolveTimelineRange 补全并校验时间轴生成区间，按目标节点数推算参考间隔。
 func ResolveTimelineRange(cfg TimelineRangeConfig, profile *model.Profile) (TimelineRangeConfig, error) {
 	out := cfg
@@ -46,11 +62,12 @@ func ResolveTimelineRange(cfg TimelineRangeConfig, profile *model.Profile) (Time
 	if profile == nil {
 		return out, fmt.Errorf("档案不存在")
 	}
+	effectiveDeath := EffectiveDeathYear(profile.BirthYear, profile.DeathYear)
 	if out.StartYear <= 0 {
 		out.StartYear = profile.BirthYear
 	}
 	if out.EndYear <= 0 {
-		out.EndYear = profile.DeathYear
+		out.EndYear = effectiveDeath
 	}
 	if out.StartYear > out.EndYear {
 		return out, fmt.Errorf("起始年份不能晚于结束年份")
@@ -58,8 +75,8 @@ func ResolveTimelineRange(cfg TimelineRangeConfig, profile *model.Profile) (Time
 	if out.StartYear < profile.BirthYear {
 		out.StartYear = profile.BirthYear
 	}
-	if out.EndYear > profile.DeathYear {
-		out.EndYear = profile.DeathYear
+	if out.EndYear > effectiveDeath {
+		out.EndYear = effectiveDeath
 	}
 	span := out.EndYear - out.StartYear
 	out.StepYears = ComputeStepYears(span, out.TargetNodeCount)
@@ -77,7 +94,11 @@ func ResolveRegenerateTailRange(anchorYear, deathYear, targetNodeCount int) (ste
 	if targetNodeCount > 50 {
 		targetNodeCount = 50
 	}
-	span := deathYear - anchorYear
+	endYear := deathYear
+	if endYear <= anchorYear {
+		endYear = EffectiveDeathYear(anchorYear, deathYear)
+	}
+	span := endYear - anchorYear
 	if span < 0 {
 		span = 0
 	}

@@ -76,3 +76,51 @@ body {
   font-size: 1.1rem;
   color: #16213e;
 }
+
+/* 生成时间轴确认弹窗 */
+.timeline-confirm-box {
+  max-width: 440px;
+  width: calc(100vw - 32px);
+}
+.timeline-confirm-box .el-message-box__message {
+  width: 100%;
+}
+.timeline-confirm-box .tl-confirm-lead {
+  margin: 0 0 14px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #303133;
+}
+.timeline-confirm-box .tl-confirm-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f5f7fa;
+  border: 1px solid #e4e7ed;
+}
+.timeline-confirm-box .tl-confirm-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.timeline-confirm-box .tl-confirm-label {
+  flex-shrink: 0;
+  color: #909399;
+}
+.timeline-confirm-box .tl-confirm-value {
+  text-align: right;
+  color: #303133;
+  font-weight: 500;
+  word-break: break-word;
+}
+.timeline-confirm-box .tl-confirm-hint {
+  margin: 14px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #909399;
+}

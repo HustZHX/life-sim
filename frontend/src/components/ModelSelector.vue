@@ -4,6 +4,12 @@ import { ArrowDown, ArrowUp } from '@element-plus/icons-vue'
 import { api, type AIModel } from '@/api/client'
 import { DEFAULT_AI_MODEL, isAIModelId, normalizeAIModel, type AIModelId } from '@/constants/models'
 
+const props = withDefaults(
+  defineProps<{
+    label?: string
+  }>(),
+  {}
+)
 const model = defineModel<AIModelId>({ default: DEFAULT_AI_MODEL })
 const models = ref<AIModel[]>([])
 const loading = ref(false)
@@ -33,7 +39,7 @@ function onSelect() {
 
 <template>
   <div v-loading="loading" class="model-selector">
-    <div class="label">AI 模型</div>
+    <div class="label">{{ props.label || 'AI 模型' }}</div>
 
     <button type="button" class="model-trigger" :class="{ open: expanded }" @click="toggle">
       <span class="trigger-main">

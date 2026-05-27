@@ -10,6 +10,7 @@ import {
   MAX_TARGET_NODE_COUNT,
   MIN_TARGET_NODE_COUNT,
   computeStepYears,
+  effectiveDeathYear,
   formatRegenSummary,
   formatTimelineSummary,
 } from '@/utils/timelineDensity'
@@ -22,6 +23,8 @@ const props = defineProps<{
   densityOnly?: boolean
   /** 重算后续时锚点年份，用于计算剩余跨度 */
   anchorYear?: number
+  /** 已确认的卒年（完全重算第二步），优先于档案 death_year */
+  overrideEndYear?: number
 }>()
 
 const config = defineModel<TimelineConfig>({ required: true })
@@ -33,7 +36,7 @@ const expanded = ref(false)
 
 const yearRange = computed(() => ({
   min: props.profile.birth_year,
-  max: props.profile.death_year,
+  max: effectiveDeathYear(props.profile),
 }))
 
 const spanStartYear = computed(() => {
@@ -43,7 +46,14 @@ const spanStartYear = computed(() => {
   return config.value.start_year || props.profile.birth_year
 })
 
-const spanEndYear = computed(() => config.value.end_year || props.profile.death_year)
+const spanEndYear = computed(() => {
+  if (props.overrideEndYear != null && props.overrideEndYear > 0) {
+    return props.overrideEndYear
+  }
+  const end = config.value.end_year
+  if (end > props.profile.birth_year) return end
+  return effectiveDeathYear(props.profile)
+})
 
 const spanYears = computed(() => Math.max(0, spanEndYear.value - spanStartYear.value))
 
@@ -70,7 +80,9 @@ watch(
   () => props.profile,
   (p) => {
     if (!config.value.start_year) config.value.start_year = p.birth_year
-    if (!config.value.end_year) config.value.end_year = p.death_year
+    if (!config.value.end_year || config.value.end_year <= p.birth_year) {
+      config.value.end_year = effectiveDeathYear(p)
+    }
     if (!config.value.target_node_count) config.value.target_node_count = DEFAULT_TARGET_NODE_COUNT
   },
   { immediate: true }
@@ -112,7 +124,7 @@ function toggleExpanded() {
 
 <template>
   <div v-if="densityOnly" class="timeline-config density-only">
-    <div class="block-label">后续生成配置</div>
+    <div class="block-label">后续节点密度</div>
 
     <button
       type="button"
@@ -134,7 +146,7 @@ function toggleExpanded() {
     <Transition name="config-panel">
       <div v-if="expanded" class="config-panel">
         <p class="density-hint">
-          节点数随人物寿命自动适配：寿命越长，参考间隔越大，总节点仍约 {{ config.target_node_count }} 个。AI 按关键事件安排年份，非机械间隔。
+          基于已确认寿命计算剩余跨度。节点数随跨度自动适配；AI 按关键事件安排年份，非机械间隔。
         </p>
         <div class="form-row slider-row">
           <span class="field-label">目标节点数（约）</span>
@@ -194,6 +206,17 @@ function toggleExpanded() {
     </p>
 
     <div class="custom-form">
+      <div class="form-row instructions-row">
+        <span class="field-label">备注与特殊要求</span>
+        <el-input
+          v-model="config.instructions"
+          type="textarea"
+          :rows="3"
+          :disabled="disabled"
+          placeholder="例如：托孤后穿越到 2025 年；或聚焦青年科举阶段；或按《三体》世界观展开…"
+        />
+        <p class="density-hint">AI 生成时间轴时会优先遵循此处说明（穿越、架空、特定阶段等）。</p>
+      </div>
       <div class="form-row slider-row">
         <span class="field-label">目标节点数（约）</span>
         <el-slider

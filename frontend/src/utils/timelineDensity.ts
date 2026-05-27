@@ -2,6 +2,27 @@ export const DEFAULT_TARGET_NODE_COUNT = 20
 export const MIN_TARGET_NODE_COUNT = 8
 export const MAX_TARGET_NODE_COUNT = 40
 
+/** 档案未标注卒年或仍在世时，用当前年份作为时间轴上界 */
+export function effectiveDeathYear(profile: { birth_year: number; death_year: number }): number {
+  if (profile.death_year > profile.birth_year) {
+    return profile.death_year
+  }
+  const y = new Date().getFullYear()
+  if (y > profile.birth_year) return y
+  return profile.birth_year > 0 ? profile.birth_year + 1 : y
+}
+
+export function isLivingProfile(profile: { birth_year: number; death_year: number }): boolean {
+  return profile.death_year <= 0 || profile.death_year <= profile.birth_year
+}
+
+export function formatProfileLifeSpan(profile: { birth_year: number; death_year: number }): string {
+  if (isLivingProfile(profile)) {
+    return `${profile.birth_year} — 至今`
+  }
+  return `${profile.birth_year} — ${profile.death_year}`
+}
+
 /** 按区间跨度与目标节点数计算参考间隔（年） */
 export function computeStepYears(spanYears: number, targetNodes: number): number {
   const target = targetNodes > 0 ? targetNodes : DEFAULT_TARGET_NODE_COUNT

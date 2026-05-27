@@ -26,6 +26,7 @@ type Character struct {
 	ResolveQuery       string    `json:"resolve_query,omitempty"`
 	ConfirmedIdentity  string    `json:"confirmed_identity,omitempty"`
 	CurrentVersionID   string    `json:"current_version_id,omitempty"`
+	CurrentTimelineID  string    `json:"current_timeline_id,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
@@ -108,10 +109,22 @@ type LifeNode struct {
 type TimelineVersion struct {
 	ID              string    `json:"id"`
 	CharacterID     string    `json:"character_id"`
+	TimelineID      string    `json:"timeline_id,omitempty"`
 	ParentVersionID string    `json:"parent_version_id,omitempty"`
 	TriggerNodeID   string    `json:"trigger_node_id,omitempty"`
 	ChangeSummary   string    `json:"change_summary,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
+}
+
+// Timeline 人物下的独立时间轴实例（可有多条）；版本链归属同一条时间轴。
+type Timeline struct {
+	ID               string    `json:"id"`
+	CharacterID      string    `json:"character_id"`
+	Title            string    `json:"title"`
+	CurrentVersionID string    `json:"current_version_id,omitempty"`
+	NodeCount        int       `json:"node_count,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type Job struct {
@@ -143,11 +156,52 @@ type PatchNodeRequest struct {
 	Model               string `json:"model"`
 	TargetNodeCount     int    `json:"target_node_count"`
 	StepYears           int    `json:"step_years,omitempty"`
+	ConfirmedDeathYear  int    `json:"confirmed_death_year,omitempty"`
+	ConfirmedDeathCause string `json:"confirmed_death_cause,omitempty"`
+}
+
+// LifespanPreviewRequest 预览寿命（编辑节点后）
+type LifespanPreviewRequest struct {
+	Title               string `json:"title"`
+	Events              string `json:"events"`
+	Thoughts            string `json:"thoughts"`
+	PersonalitySnapshot string `json:"personality_snapshot"`
+	Model               string `json:"model"`
+}
+
+// LifespanPreviewResponse 寿命预览结果
+type LifespanPreviewResponse struct {
+	CurrentDeathYear int                  `json:"current_death_year"`
+	AnchorYear       int                  `json:"anchor_year"`
+	Preview          LifespanRecalcResult `json:"preview"`
+}
+
+// ProfileGenerateRequest 生成档案请求
+type ProfileGenerateRequest struct {
+	Model        string `json:"model"`
+	DisplayName  string `json:"display_name,omitempty"`
+	Background   string `json:"background,omitempty"`
+	Introduction string `json:"introduction,omitempty"`
+}
+
+// ProfileRandomizeFieldRequest 随机重生成档案单字段
+type ProfileRandomizeFieldRequest struct {
+	Field string `json:"field"`
+	Model string `json:"model"`
+}
+
+// SuggestNamesRequest AI 推荐随机人物姓名
+type SuggestNamesRequest struct {
+	Model        string `json:"model"`
+	Background   string `json:"background,omitempty"`
+	Introduction string `json:"introduction,omitempty"`
 }
 
 // TimelineGenerateRequest 生成时间轴请求
 type TimelineGenerateRequest struct {
 	Model           string `json:"model"`
+	Title           string `json:"title,omitempty"`
+	Instructions    string `json:"instructions,omitempty"`
 	TargetNodeCount int    `json:"target_node_count"`
 	StepYears       int    `json:"step_years,omitempty"`
 	StartYear       int    `json:"start_year"`
@@ -200,6 +254,7 @@ type CharacterHistoryItem struct {
 	BirthYear        int       `json:"birth_year,omitempty"`
 	DeathYear        int       `json:"death_year,omitempty"`
 	NodeCount        int       `json:"node_count"`
+	TimelineCount    int       `json:"timeline_count"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
