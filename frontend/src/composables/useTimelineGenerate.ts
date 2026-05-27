@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { DEFAULT_TARGET_NODE_COUNT } from '@/utils/timelineDensity'
+import { DEFAULT_TARGET_NODE_COUNT, formatTimelineSummary } from '@/utils/timelineDensity'
 import { api, pollJob, type AIModelId, type TimelineConfig } from '@/api/client'
 import { modelDisplayLabel } from '@/constants/models'
 

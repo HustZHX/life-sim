@@ -45,6 +45,10 @@ npm run dev
 
 访问 `http://localhost:5173`
 
+## 开发约定
+
+开发与协作约定（服务重启、环境变量、数据兼容性等）见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+
 ## API 概览
 
 | 方法 | 路径 | 说明 |
