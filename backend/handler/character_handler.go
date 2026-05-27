@@ -286,6 +286,40 @@ func (h *CharacterHandler) RegenerateNodeEvents(c *gin.Context) {
 	OK(c, resp)
 }
 
+func (h *CharacterHandler) GetBranchOverview(c *gin.Context) {
+	charID := c.Param("id")
+	tid := c.Param("tid")
+	overview, err := h.svc.GetBranchOverview(charID, tid)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, overview)
+}
+
+func (h *CharacterHandler) ListBranches(c *gin.Context) {
+	charID := c.Param("id")
+	tid := c.Param("tid")
+	tree, err := h.svc.ListBranches(charID, tid)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, tree)
+}
+
+func (h *CharacterHandler) ActivateBranch(c *gin.Context) {
+	charID := c.Param("id")
+	tid := c.Param("tid")
+	vid := c.Param("vid")
+	ch, err := h.svc.ActivateBranch(charID, tid, vid)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	OK(c, ch)
+}
+
 func (h *CharacterHandler) ListVersions(c *gin.Context) {
 	id := c.Param("id")
 	timelineID := c.Query("timeline_id")

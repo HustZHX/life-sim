@@ -129,6 +129,11 @@ CREATE INDEX IF NOT EXISTS idx_versions_timeline ON timeline_versions(timeline_i
 	if err != nil {
 		return err
 	}
+	_, _ = s.db.Exec(`ALTER TABLE timeline_versions ADD COLUMN branch_label TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE timeline_versions ADD COLUMN fork_sequence INTEGER DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE timeline_versions ADD COLUMN fork_node_id TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE timeline_versions ADD COLUMN death_year_snapshot INTEGER DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE timeline_versions ADD COLUMN death_cause_snapshot TEXT DEFAULT ''`)
 	_, err = s.db.Exec(`
 CREATE TABLE IF NOT EXISTS narrative_artifacts (
   id TEXT PRIMARY KEY,
@@ -304,14 +309,52 @@ func (s *Store) GetProfile(characterID string) (*model.Profile, error) {
 
 func (s *Store) CreateVersion(v *model.TimelineVersion) error {
 	_, err := s.db.Exec(
-		`INSERT INTO timeline_versions (id, character_id, timeline_id, parent_version_id, trigger_node_id, change_summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		v.ID, v.CharacterID, v.TimelineID, v.ParentVersionID, v.TriggerNodeID, v.ChangeSummary, v.CreatedAt,
+		`INSERT INTO timeline_versions (
+			id, character_id, timeline_id, parent_version_id, trigger_node_id, change_summary,
+			branch_label, fork_sequence, fork_node_id, death_year_snapshot, death_cause_snapshot, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		v.ID, v.CharacterID, v.TimelineID, v.ParentVersionID, v.TriggerNodeID, v.ChangeSummary,
+		v.BranchLabel, v.ForkSequence, v.ForkNodeID, v.DeathYearSnapshot, v.DeathCauseSnapshot, v.CreatedAt,
 	)
 	return err
 }
 
+func (s *Store) UpdateVersionDeathSnapshot(versionID string, deathYear int, deathCause string) error {
+	_, err := s.db.Exec(
+		`UPDATE timeline_versions SET death_year_snapshot=?, death_cause_snapshot=? WHERE id=?`,
+		deathYear, deathCause, versionID,
+	)
+	return err
+}
+
+func (s *Store) scanTimelineVersionRow(row interface {
+	Scan(dest ...interface{}) error
+}) (*model.TimelineVersion, error) {
+	var v model.TimelineVersion
+	var created string
+	err := row.Scan(
+		&v.ID, &v.CharacterID, &v.TimelineID, &v.ParentVersionID, &v.TriggerNodeID, &v.ChangeSummary,
+		&v.BranchLabel, &v.ForkSequence, &v.ForkNodeID, &v.DeathYearSnapshot, &v.DeathCauseSnapshot, &created,
+	)
+	if err != nil {
+		return nil, err
+	}
+	v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	if v.CreatedAt.IsZero() {
+		v.CreatedAt, _ = time.Parse("2006-01-02 15:04:05.999999999-07:00", created)
+	}
+	v.NodeCount, _ = s.CountNodesByVersion(v.ID)
+	return &v, nil
+}
+
+func (s *Store) versionSelectCols() string {
+	return `id, character_id, COALESCE(timeline_id,''), parent_version_id, trigger_node_id, change_summary,
+		COALESCE(branch_label,''), COALESCE(fork_sequence,0), COALESCE(fork_node_id,''),
+		COALESCE(death_year_snapshot,0), COALESCE(death_cause_snapshot,''), created_at`
+}
+
 func (s *Store) ListVersions(characterID, timelineID string) ([]model.TimelineVersion, error) {
-	query := `SELECT id, character_id, COALESCE(timeline_id,''), parent_version_id, trigger_node_id, change_summary, created_at FROM timeline_versions WHERE character_id = ?`
+	query := `SELECT ` + s.versionSelectCols() + ` FROM timeline_versions WHERE character_id = ?`
 	args := []interface{}{characterID}
 	if timelineID != "" {
 		query += ` AND timeline_id = ?`
@@ -325,32 +368,21 @@ func (s *Store) ListVersions(characterID, timelineID string) ([]model.TimelineVe
 	defer rows.Close()
 	var list []model.TimelineVersion
 	for rows.Next() {
-		var v model.TimelineVersion
-		var created string
-		if err := rows.Scan(&v.ID, &v.CharacterID, &v.TimelineID, &v.ParentVersionID, &v.TriggerNodeID, &v.ChangeSummary, &created); err != nil {
+		v, err := s.scanTimelineVersionRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-		if v.CreatedAt.IsZero() {
-			v.CreatedAt, _ = time.Parse("2006-01-02 15:04:05.999999999-07:00", created)
-		}
-		list = append(list, v)
+		list = append(list, *v)
 	}
 	return list, nil
 }
 
 func (s *Store) GetVersion(id string) (*model.TimelineVersion, error) {
 	row := s.db.QueryRow(
-		`SELECT id, character_id, COALESCE(timeline_id,''), parent_version_id, trigger_node_id, change_summary, created_at FROM timeline_versions WHERE id = ?`,
+		`SELECT `+s.versionSelectCols()+` FROM timeline_versions WHERE id = ?`,
 		id,
 	)
-	var v model.TimelineVersion
-	var created string
-	if err := row.Scan(&v.ID, &v.CharacterID, &v.TimelineID, &v.ParentVersionID, &v.TriggerNodeID, &v.ChangeSummary, &created); err != nil {
-		return nil, err
-	}
-	v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-	return &v, nil
+	return s.scanTimelineVersionRow(row)
 }
 
 func (s *Store) SaveNodes(nodes []model.LifeNode) error {

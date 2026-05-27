@@ -58,7 +58,7 @@ func (s *CharacterService) RegenerateNodeEvents(ctx context.Context, characterID
 		"人物档案：\n%s\n"+
 			"前置人生节点（sequence<%d）：\n%s\n"+
 			"本节点：sequence=%d year=%d age=%d title=%s\n"+
-			"请根据标题「%s」重新撰写本节点经历（events）。",
+			"请根据标题「%s」重新撰写本节点经历、内心想法与性格快照（一并输出）。",
 		store.ProfileJSONInner(profile),
 		node.Sequence, store.MarshalNodesLiteBeforeSequence(allNodes, node.Sequence),
 		node.Sequence, node.Year, node.Age, title, title,
@@ -68,9 +68,14 @@ func (s *CharacterService) RegenerateNodeEvents(ctx context.Context, characterID
 	if err != nil {
 		return nil, err
 	}
-	events, err := store.ParseRegenerateEventsResult(raw)
+	parsed, err := store.ParseRegenerateNodeFromTitle(raw)
 	if err != nil {
 		return nil, err
 	}
-	return &model.RegenerateNodeEventsResponse{Events: events}, nil
+	return &model.RegenerateNodeEventsResponse{
+		Events:              parsed.Events,
+		Thoughts:            parsed.Thoughts,
+		PersonalitySnapshot: parsed.PersonalitySnapshot,
+		TraitChanges:        parsed.TraitChanges,
+	}, nil
 }

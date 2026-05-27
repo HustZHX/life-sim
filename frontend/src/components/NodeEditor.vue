@@ -6,7 +6,6 @@ import {
   api,
   type AIModelId,
   type LifeNode,
-  type LifespanPreviewResponse,
   type Profile,
   type TimelineConfig,
 } from '@/api/client'
@@ -39,9 +38,6 @@ const emit = defineEmits<{
       model: AIModelId
       patch: Record<string, string>
       target_node_count?: number
-      confirmed_death_year?: number
-      confirmed_death_cause?: string
-      lifespan_reasoning?: string
     },
   ]
   narrative: [kind: Exclude<NarrativeKind, 'light_novel'>, model: AIModelId]
@@ -64,13 +60,7 @@ const regenConfig = ref<TimelineConfig>({
   end_year: 0,
 })
 
-const previewLoading = ref(false)
 const eventsRegenerating = ref(false)
-const lifespanPreview = ref<LifespanPreviewResponse | null>(null)
-const lifespanConfirmed = ref(false)
-const confirmedDeathYear = ref(0)
-const confirmedDeathCause = ref('')
-const confirmedLifespanReasoning = ref('')
 
 const entityContext = computed<EntityHighlightContext>(() =>
   entityContextFromNode(props.node, props.profile ?? null)
@@ -85,33 +75,15 @@ function syncFormFromNode(n: LifeNode) {
   }
 }
 
-function resetLifespanFlow() {
-  lifespanPreview.value = null
-  lifespanConfirmed.value = false
-  confirmedDeathYear.value = 0
-  confirmedDeathCause.value = ''
-  confirmedLifespanReasoning.value = ''
-}
-
 watch(
   () => props.node,
   (n) => {
     if (n) {
       syncFormFromNode(n)
       uiMode.value = 'read'
-      resetLifespanFlow()
     }
   },
   { immediate: true }
-)
-
-watch(
-  () => [form.value.title, form.value.events] as const,
-  () => {
-    if (uiMode.value === 'edit' && (lifespanPreview.value || lifespanConfirmed.value)) {
-      resetLifespanFlow()
-    }
-  }
 )
 
 watch(
@@ -137,7 +109,6 @@ function enterEdit() {
 function cancelEdit() {
   if (props.node) syncFormFromNode(props.node)
   uiMode.value = 'read'
-  resetLifespanFlow()
 }
 
 function openNarrative(kind: Exclude<NarrativeKind, 'light_novel'>) {
@@ -158,8 +129,10 @@ async function regenerateEventsFromTitle() {
       model: model.value,
     })
     form.value.events = res.events
+    if (res.thoughts) form.value.thoughts = res.thoughts
+    if (res.personality_snapshot) form.value.personality_snapshot = res.personality_snapshot
     uiMode.value = 'edit'
-    ElMessage.success('已根据标题重新生成经历，可继续编辑或更新内心/性格')
+    ElMessage.success('已根据标题重新生成本节点经历、内心与性格')
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '生成经历失败')
   } finally {
@@ -171,47 +144,9 @@ function syncCurrentInner() {
   emit('save', { mode: 'inner_current', model: model.value, patch: buildPatch() })
 }
 
-function syncSubsequentInner() {
-  emit('save', { mode: 'inner_subsequent', model: model.value, patch: buildPatch() })
-}
-
-async function previewLifespan() {
-  if (!props.node || !props.characterId) return
+function deduceRemainingLife() {
   if (!form.value.events.trim()) {
-    ElMessage.warning('请先填写经历后再预览寿命')
-    return
-  }
-  previewLoading.value = true
-  resetLifespanFlow()
-  try {
-    lifespanPreview.value = await api.previewLifespan(props.characterId, props.node.id, {
-      ...buildPatch(),
-      model: model.value,
-    })
-  } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '寿命预览失败')
-  } finally {
-    previewLoading.value = false
-  }
-}
-
-function confirmLifespan() {
-  if (!lifespanPreview.value) return
-  const p = lifespanPreview.value.preview
-  if (p.death_year <= lifespanPreview.value.anchor_year) {
-    ElMessage.error('预览卒年须大于锚点年份')
-    return
-  }
-  confirmedDeathYear.value = p.death_year
-  confirmedDeathCause.value = p.death_cause || ''
-  confirmedLifespanReasoning.value = p.reasoning || ''
-  lifespanConfirmed.value = true
-  regenConfig.value.end_year = p.death_year
-}
-
-function regenerateAllSubsequent() {
-  if (!lifespanConfirmed.value || confirmedDeathYear.value <= 0) {
-    ElMessage.warning('请先预览并确认寿命')
+    ElMessage.warning('请先填写经历后再推演后续')
     return
   }
   emit('save', {
@@ -219,9 +154,6 @@ function regenerateAllSubsequent() {
     model: cascadeModel.value,
     patch: buildPatch(),
     target_node_count: regenConfig.value.target_node_count,
-    confirmed_death_year: confirmedDeathYear.value,
-    confirmed_death_cause: confirmedDeathCause.value,
-    lifespan_reasoning: confirmedLifespanReasoning.value,
   })
 }
 </script>
@@ -298,7 +230,7 @@ function regenerateAllSubsequent() {
           :disabled="!!loading"
           @click="regenerateEventsFromTitle"
         >
-          根据标题重新生成经历
+          根据标题重新生成本节点
         </el-button>
       </div>
 
@@ -327,9 +259,9 @@ function regenerateAllSubsequent() {
           :disabled="!!loading"
           @click="regenerateEventsFromTitle"
         >
-          根据标题重新生成经历
+          根据标题重新生成本节点
         </el-button>
-        <span class="regen-hint">保留标题，由 AI 重写下方经历正文</span>
+        <span class="regen-hint">保留标题，由 AI 重写经历、内心想法与性格快照</span>
       </div>
 
       <el-form-item label="经历">
@@ -372,70 +304,29 @@ function regenerateAllSubsequent() {
         <el-button type="primary" :loading="loading" @click="syncCurrentInner">
           根据经历更新本节点想法/性格
         </el-button>
-        <el-button type="primary" plain :loading="loading" @click="syncSubsequentInner">
-          保留后续经历，重算内心与性格
-        </el-button>
       </div>
 
-      <div class="cascade-box">
-        <div class="cascade-head">完全重算后续（两步）</div>
-        <p class="cascade-hint">第一步根据新经历预览寿命；确认后再配置节点密度并生成。默认使用 Pro 模型。</p>
-
-        <el-button
-          type="warning"
-          plain
-          :loading="previewLoading"
+      <div v-if="profile" class="cascade-box">
+        <div class="cascade-head">推演后续</div>
+        <p class="cascade-hint">
+          从锚点起新增若干节点（如 M=1 仅生成下一个人生阶段）。会创建新分支并自动切换；分支内寿命随推演演变，与档案原卒年无关。默认 Pro 模型。
+        </p>
+        <ModelSelector v-model="cascadeModel" />
+        <TimelineConfigPanel
+          v-model="regenConfig"
+          :profile="profile"
+          :model="cascadeModel"
+          :anchor-year="node.year"
+          density-only
           :disabled="loading"
-          @click="previewLifespan"
-        >
-          第一步：预览寿命
-        </el-button>
-
-        <el-card v-if="lifespanPreview && !lifespanConfirmed" class="preview-card" shadow="never">
-          <div class="preview-row">
-            <span class="preview-label">档案卒年</span>
-            <span>{{ lifespanPreview.current_death_year }} 年</span>
-          </div>
-          <div class="preview-row highlight">
-            <span class="preview-label">预览卒年</span>
-            <span>{{ lifespanPreview.preview.death_year }} 年</span>
-          </div>
-          <div v-if="lifespanPreview.preview.death_cause" class="preview-row">
-            <span class="preview-label">死因</span>
-            <span>{{ lifespanPreview.preview.death_cause }}</span>
-          </div>
-          <p class="preview-reason">{{ lifespanPreview.preview.reasoning }}</p>
-          <el-button type="primary" size="small" @click="confirmLifespan">确认此寿命</el-button>
-        </el-card>
-
-        <el-alert
-          v-if="lifespanConfirmed"
-          :title="`已确认卒年：${confirmedDeathYear} 年（锚点 ${node.year} 年）`"
-          type="success"
-          :closable="false"
-          show-icon
-          class="confirmed-alert"
         />
-
-        <template v-if="lifespanConfirmed && profile">
-          <ModelSelector v-model="cascadeModel" />
-          <TimelineConfigPanel
-            v-model="regenConfig"
-            :profile="profile"
-            :model="cascadeModel"
-            :anchor-year="node.year"
-            :override-end-year="confirmedDeathYear"
-            density-only
-            :disabled="loading"
-          />
-          <el-button type="warning" :loading="loading" @click="regenerateAllSubsequent">
-            第二步：生成后续时间轴
-          </el-button>
-        </template>
+        <el-button type="warning" :loading="loading" @click="deduceRemainingLife">
+          推演后续
+        </el-button>
       </div>
 
       <el-alert
-        title="编辑后可用「更新本节点」或「完全重算后续」提交 AI 重算。"
+        title="编辑后可「更新本节点」或「推演后续」；每次保存会创建新分支。"
         type="info"
         :closable="false"
         show-icon

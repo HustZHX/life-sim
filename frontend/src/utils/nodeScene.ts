@@ -18,13 +18,12 @@ const SCENE_LABELS: Record<keyof NodeScene, string> = {
 export function sceneDisplayItems(scene?: NodeScene | null): SceneDisplayItem[] {
   if (!scene) return []
   const order: (keyof NodeScene)[] = ['datetime', 'time_of_day', 'season', 'weather', 'scene']
-  return order
-    .map((key) => {
-      const value = scene[key]?.trim()
-      if (!value) return null
-      return { key, label: SCENE_LABELS[key], value }
-    })
-    .filter((item): item is SceneDisplayItem => item !== null)
+  const items: SceneDisplayItem[] = []
+  for (const key of order) {
+    const value = scene[key]?.trim()
+    if (value) items.push({ key, label: SCENE_LABELS[key], value })
+  }
+  return items
 }
 
 export function hasScene(scene?: NodeScene | null): boolean {

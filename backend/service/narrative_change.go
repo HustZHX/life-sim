@@ -134,15 +134,6 @@ func (s *CharacterService) runNarrativeChange(
 		PersonalitySnapshot: anchor.PersonalitySnapshot,
 		ChangeSummary:       plan.ChangeSummary + "；重算后续节点",
 	}
-	if plan.DeathYear > anchor.Year {
-		patchReq.ConfirmedDeathYear = plan.DeathYear
-		patchReq.ConfirmedDeathCause = plan.DeathCause
-		patchReq.LifespanReasoning = plan.DeathReasoning
-		if patchReq.LifespanReasoning == "" {
-			patchReq.LifespanReasoning = "叙述变更后调整寿命"
-		}
-	}
-
-	setJobStage(s.store, jobID, 50, "正在重算后续时间轴…")
+	setJobStage(s.store, jobID, 50, "正在推演后续节点…")
 	s.runRegenerate(ctx, jobID, characterID, ch, timeline, locked, &anchor, oldNodes, patchReq)
 }

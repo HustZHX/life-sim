@@ -125,7 +125,55 @@ export interface TimelineVersion {
   parent_version_id?: string
   trigger_node_id?: string
   change_summary?: string
+  branch_label?: string
+  fork_sequence?: number
+  fork_node_id?: string
+  death_year_snapshot?: number
+  death_cause_snapshot?: string
+  node_count?: number
   created_at: string
+}
+
+export interface BranchNode {
+  id: string
+  parent_id?: string
+  label: string
+  change_summary?: string
+  fork_sequence?: number
+  fork_node_id?: string
+  node_count: number
+  death_year_snapshot?: number
+  death_cause_snapshot?: string
+  is_active: boolean
+  created_at: string
+  children?: BranchNode[]
+}
+
+export interface BranchTreeResponse {
+  timeline_id: string
+  active_version_id: string
+  roots: BranchNode[]
+}
+
+export interface BranchOverviewNodeLite {
+  sequence: number
+  year: number
+  title: string
+}
+
+export interface BranchOverviewEntry {
+  version_id: string
+  label: string
+  is_active: boolean
+  fork_sequence?: number
+  death_year_snapshot?: number
+  nodes: BranchOverviewNodeLite[]
+}
+
+export interface BranchOverviewResponse {
+  timeline_id: string
+  active_version_id: string
+  branches: BranchOverviewEntry[]
 }
 
 export interface Job {
@@ -155,6 +203,8 @@ export type NarrativeDensity = 'standard' | 'rich'
 export interface TimelineConfig {
   title?: string
   instructions?: string
+  /** 时代背景与大事记；留空则由 AI 按生成区间自动整理 */
+  era_events?: string
   target_node_count: number
   start_year: number
   end_year: number
@@ -345,6 +395,7 @@ export const api = {
   ) =>
     unwrap<Job>(
       http.post(`/api/v1/characters/${id}/timeline/generate`, {
+        era_events: config?.era_events,
         model,
         title: config?.title,
         instructions: config?.instructions,
@@ -393,7 +444,12 @@ export const api = {
     nodeId: string,
     body: { title: string; model: AIModelId }
   ) =>
-    unwrap<{ events: string }>(
+    unwrap<{
+      events: string
+      thoughts?: string
+      personality_snapshot?: string
+      trait_changes?: TraitChange[]
+    }>(
       http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/regenerate-events`, body)
     ),
 
@@ -404,6 +460,21 @@ export const api = {
       timelineId
         ? http.get(`/api/v1/characters/${id}/timelines/${timelineId}/versions`)
         : http.get(`/api/v1/characters/${id}/versions`)
+    ),
+
+  listBranches: (charId: string, timelineId: string) =>
+    unwrap<BranchTreeResponse>(
+      http.get(`/api/v1/characters/${charId}/timelines/${timelineId}/branches`)
+    ),
+
+  getBranchOverview: (charId: string, timelineId: string) =>
+    unwrap<BranchOverviewResponse>(
+      http.get(`/api/v1/characters/${charId}/timelines/${timelineId}/branches/overview`)
+    ),
+
+  activateBranch: (charId: string, timelineId: string, versionId: string) =>
+    unwrap<Character>(
+      http.post(`/api/v1/characters/${charId}/timelines/${timelineId}/branches/${versionId}/activate`)
     ),
 
   getVersionDiff: (charId: string, vid: string) =>

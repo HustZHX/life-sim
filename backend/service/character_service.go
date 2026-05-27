@@ -376,6 +376,7 @@ func (s *CharacterService) StartTimelineJob(ctx context.Context, characterID str
 		EndYear:          rangeCfg.EndYear,
 		Title:            title,
 		Instructions:     req.Instructions,
+		EraEventsOverride: req.EraEvents,
 		CharacterMode:    ch.Mode,
 		NarrativeDensity: model.NormalizeNarrativeDensity(req.NarrativeDensity),
 	}
@@ -395,14 +396,16 @@ func defaultTimelineTitle(custom string, startYear, endYear, targetNodes int) st
 }
 
 type timelineJobConfig struct {
-	StepYears        int
-	TargetNodeCount  int
-	StartYear        int
-	EndYear          int
-	Title            string
-	Instructions     string
-	CharacterMode    string
-	NarrativeDensity string
+	StepYears         int
+	TargetNodeCount   int
+	StartYear         int
+	EndYear           int
+	Title             string
+	Instructions      string
+	EraEventsOverride string
+	EraContext        string
+	CharacterMode     string
+	NarrativeDensity  string
 }
 
 func (s *CharacterService) runTimelineGenerate(ctx context.Context, jobID, characterID, timelineID string, profile *model.Profile, modelID string, cfg timelineJobConfig) {
@@ -427,6 +430,15 @@ func (s *CharacterService) runTimelineGenerate(ctx context.Context, jobID, chara
 	}
 	job.Model = modelID
 	_ = s.store.UpdateJob(job)
+
+	setJobStage(s.store, jobID, 8, "正在整理时代背景与大事记…")
+	eraCtx, eraErr := resolveEraContext(ctx, s, cfg.CharacterMode, profileJSON, apiModel, cfg, cfg.EraEventsOverride)
+	if eraErr != nil {
+		log.Printf("[timeline] 时代背景生成失败: %v", eraErr)
+		s.failJob(job, "时代背景整理失败: "+eraErr.Error())
+		return
+	}
+	cfg.EraContext = eraCtx
 
 	versionID := uuid.New().String()
 	var allNodes []model.LifeNode
@@ -456,7 +468,9 @@ func (s *CharacterService) runTimelineGenerate(ctx context.Context, jobID, chara
 		CharacterID:     characterID,
 		TimelineID:      timelineID,
 		ParentVersionID: "",
+		BranchLabel:     "主枝",
 		ChangeSummary:   fmt.Sprintf("生成时间轴（%d-%d，约%d个节点）", cfg.StartYear, cfg.EndYear, cfg.TargetNodeCount),
+		DeathYearSnapshot: profile.DeathYear,
 		CreatedAt:       time.Now(),
 	}
 	if err := s.store.CreateVersion(version); err != nil {
@@ -703,8 +717,12 @@ func (s *CharacterService) runInnerCurrent(ctx context.Context, jobID, character
 
 	version := &model.TimelineVersion{
 		ID: newVersionID, CharacterID: characterID, TimelineID: timeline.ID, ParentVersionID: timeline.CurrentVersionID,
-		TriggerNodeID: edited.ID, ChangeSummary: fmt.Sprintf("重算节点 #%d 内心与性格", edited.Sequence),
-		CreatedAt: time.Now(),
+		TriggerNodeID: edited.ID,
+		BranchLabel:   fmt.Sprintf("更新节点 #%d", edited.Sequence+1),
+		ForkSequence:  edited.Sequence,
+		ForkNodeID:    edited.ID,
+		ChangeSummary: fmt.Sprintf("重算节点 #%d 内心与性格", edited.Sequence),
+		CreatedAt:     time.Now(),
 	}
 	if err := s.store.CreateVersion(version); err != nil {
 		s.failJob(job, err.Error())
@@ -853,46 +871,9 @@ func (s *CharacterService) runRegenerate(ctx context.Context, jobID, characterID
 		return
 	}
 
-	// 1. 确定寿命（预览已确认则沿用，否则现场重算）
-	job.Progress = 25
-	_ = s.store.UpdateJob(job)
-	var life *model.LifespanRecalcResult
-	if req.ConfirmedDeathYear > 0 {
-		if req.ConfirmedDeathYear <= edited.Year {
-			s.failJob(job, "确认卒年须大于锚点年份")
-			return
-		}
-		reasoning := req.LifespanReasoning
-		if reasoning == "" {
-			reasoning = "用户已在预览步骤确认"
-		}
-		life = &model.LifespanRecalcResult{
-			DeathYear:  req.ConfirmedDeathYear,
-			DeathCause: req.ConfirmedDeathCause,
-			Reasoning:  reasoning,
-		}
-	} else {
-		var errLife error
-		life, errLife = s.recalculateLifespan(ctx, profile, locked, edited, modelID)
-		if errLife != nil {
-			s.failJob(job, "寿命重算失败: "+errLife.Error())
-			return
-		}
-	}
-	if life.DeathYear > edited.Year {
-		profile.DeathYear = life.DeathYear
-		if life.DeathCause != "" {
-			profile.DeathCause = life.DeathCause
-		}
-		if err := s.store.SaveProfile(profile); err != nil {
-			s.failJob(job, err.Error())
-			return
-		}
-	}
+	_, targetNodes := store.ResolveRegenerateTailRange(edited.Year, 0, req.TargetNodeCount)
 
-	stepYears, targetNodes := store.ResolveRegenerateTailRange(edited.Year, profile.DeathYear, req.TargetNodeCount)
-
-	// 2. 完全重新生成后续时间轴
+	setJobStage(s.store, jobID, 25, "正在推演后续节点…")
 	system, err := s.ai.LoadPrompt(fullTailPromptName(ch.Mode))
 	if err != nil {
 		s.failJob(job, err.Error())
@@ -900,23 +881,16 @@ func (s *CharacterService) runRegenerate(ctx context.Context, jobID, characterID
 	}
 
 	lockedJSON := store.MarshalNodesLocked(locked)
-	remainingSpan := profile.DeathYear - edited.Year
-	if remainingSpan < 0 {
-		remainingSpan = 0
-	}
 	user := fmt.Sprintf(
-		"目标约 %d 个后续节点，锚点 year=%d，death_year=%d（剩余跨度 %d 年），参考间隔约 %d 年（非强制，以关键事件为准）\n"+
-			"人物档案（含初始性格、信念、经历摘要等原形）：\n%s\n"+
-			"已锁定人生节点（含锚点及之前全部经历/想法/性格，须作为后续衔接基准）：\n%s\n"+
-			"锚点节点（编辑后）：sequence=%d year=%d age=%d title=%s\nevents=%s\n"+
-			"寿命重算说明：%s",
-		targetNodes, edited.Year, profile.DeathYear, remainingSpan, stepYears,
+		"【推演后续】恰好生成 M=%d 个全新后续节点；anchor_sequence=%d；anchor_year=%d；birth_year=%d\n"+
+			"（勿写到某一卒年；year 由事件决定；M=1 时只生成下一个成长/事件阶段）\n"+
+			"人物档案：\n%s\n"+
+			"已锁定节点（含锚点，须衔接）：\n%s\n"+
+			"锚点节点：sequence=%d year=%d age=%d title=%s\nevents=%s",
+		targetNodes, edited.Sequence, edited.Year, profile.BirthYear,
 		store.ProfileJSONTimeline(profile), lockedJSON,
 		edited.Sequence, edited.Year, edited.Age, edited.Title, edited.Events,
-		life.Reasoning,
 	)
-
-	setJobStage(s.store, jobID, 40, "正在调用 AI 生成后续时间轴…")
 
 	apiModel, err := s.resolveAPIModel(modelID)
 	if err != nil {
@@ -940,6 +914,11 @@ func (s *CharacterService) runRegenerate(ctx context.Context, jobID, characterID
 		s.failJob(job, err.Error())
 		return
 	}
+	newTail = store.TrimSubsequentTail(newTail, edited.Sequence, profile.BirthYear, targetNodes)
+	if len(newTail) == 0 {
+		s.failJob(job, "AI 未返回有效后续节点")
+		return
+	}
 
 	allNodes := make([]model.LifeNode, 0, len(locked)+len(newTail))
 	for _, n := range locked {
@@ -953,14 +932,19 @@ func (s *CharacterService) runRegenerate(ctx context.Context, jobID, characterID
 		n.ID = uuid.New().String()
 		allNodes = append(allNodes, n)
 	}
+	deathSnap := store.MaxNodeYear(allNodes)
 	version := &model.TimelineVersion{
-		ID:              newVersionID,
-		CharacterID:     characterID,
-		TimelineID:      timeline.ID,
-		ParentVersionID: timeline.CurrentVersionID,
-		TriggerNodeID:   edited.ID,
-		ChangeSummary:   regenerateVersionSummary(req, edited.Sequence, profile.DeathYear),
-		CreatedAt:       time.Now(),
+		ID:                newVersionID,
+		CharacterID:       characterID,
+		TimelineID:        timeline.ID,
+		ParentVersionID:   timeline.CurrentVersionID,
+		TriggerNodeID:     edited.ID,
+		BranchLabel:       fmt.Sprintf("推演后续 · 节点#%d", edited.Sequence+1),
+		ForkSequence:      edited.Sequence,
+		ForkNodeID:        edited.ID,
+		ChangeSummary:     regenerateVersionSummary(req, edited.Sequence, len(newTail)),
+		DeathYearSnapshot: deathSnap,
+		CreatedAt:         time.Now(),
 	}
 
 	if err := s.store.CreateVersion(version); err != nil {
@@ -1047,9 +1031,97 @@ func (s *CharacterService) GetJob(jobID string) (*model.Job, error) {
 	return s.store.GetJob(jobID)
 }
 
-func regenerateVersionSummary(req model.PatchNodeRequest, anchorSeq, deathYear int) string {
+func regenerateVersionSummary(req model.PatchNodeRequest, anchorSeq, newNodeCount int) string {
 	if req.ChangeSummary != "" {
 		return req.ChangeSummary
 	}
-	return fmt.Sprintf("编辑节点 #%d 后重算寿命并全新生成后续（卒于%d年）", anchorSeq, deathYear)
+	return fmt.Sprintf("编辑节点 #%d 后推演后续（+%d 节点）", anchorSeq, newNodeCount)
+}
+
+func (s *CharacterService) ListBranches(characterID, timelineID string) (*model.BranchTreeResponse, error) {
+	ch, err := s.store.GetCharacter(characterID)
+	if err != nil {
+		return nil, err
+	}
+	tid, err := s.resolveTimelineScope(ch, timelineID)
+	if err != nil {
+		return nil, err
+	}
+	tl, err := s.store.GetTimeline(tid)
+	if err != nil {
+		return nil, err
+	}
+	versions, err := s.store.ListVersions(characterID, tid)
+	if err != nil {
+		return nil, err
+	}
+	roots := store.BuildBranchTree(versions, tl.CurrentVersionID)
+	return &model.BranchTreeResponse{
+		TimelineID:      tid,
+		ActiveVersionID: tl.CurrentVersionID,
+		Roots:           roots,
+	}, nil
+}
+
+func (s *CharacterService) GetBranchOverview(characterID, timelineID string) (*model.BranchOverviewResponse, error) {
+	ch, err := s.store.GetCharacter(characterID)
+	if err != nil {
+		return nil, err
+	}
+	tid, err := s.resolveTimelineScope(ch, timelineID)
+	if err != nil {
+		return nil, err
+	}
+	tl, err := s.store.GetTimeline(tid)
+	if err != nil {
+		return nil, err
+	}
+	versions, err := s.store.ListVersions(characterID, tid)
+	if err != nil {
+		return nil, err
+	}
+	roots := store.BuildBranchTree(versions, tl.CurrentVersionID)
+	flat := store.FlattenBranchTreeDFS(roots)
+
+	branches := make([]model.BranchOverviewEntry, 0, len(flat))
+	for _, b := range flat {
+		nodes, err := s.store.GetNodesByVersion(b.ID)
+		if err != nil {
+			return nil, err
+		}
+		label := b.Label
+		if label == "" {
+			label = b.ChangeSummary
+		}
+		if label == "" {
+			label = "分支"
+		}
+		branches = append(branches, model.BranchOverviewEntry{
+			VersionID:         b.ID,
+			Label:             label,
+			IsActive:          b.IsActive,
+			ForkSequence:      b.ForkSequence,
+			DeathYearSnapshot: b.DeathYearSnapshot,
+			Nodes:             store.NodesToOverviewLite(nodes),
+		})
+	}
+	return &model.BranchOverviewResponse{
+		TimelineID:      tid,
+		ActiveVersionID: tl.CurrentVersionID,
+		Branches:        branches,
+	}, nil
+}
+
+func (s *CharacterService) ActivateBranch(characterID, timelineID, versionID string) (*model.Character, error) {
+	version, err := s.store.GetVersion(versionID)
+	if err != nil {
+		return nil, err
+	}
+	if version.CharacterID != characterID {
+		return nil, fmt.Errorf("版本不属于该角色")
+	}
+	if timelineID != "" && version.TimelineID != timelineID {
+		return nil, fmt.Errorf("版本不属于该时间轴")
+	}
+	return s.Rollback(characterID, versionID)
 }

@@ -95,9 +95,7 @@ func (s *CharacterService) generateRichTimelineNodes(
 		if len(merged) > 0 {
 			user += "\n\n前置已扩写节点（性格衔接参考）：\n" + store.MarshalSkeletonContextPrior(merged, 2)
 		}
-		if cfg.Instructions != "" {
-			user += "\n\n用户特殊要求/备注（须优先满足）：\n" + cfg.Instructions
-		}
+		user = appendTimelineExtras(user, cfg)
 
 		done := make(chan struct{})
 		go tickJobProgress(s.store, jobID, progress+1, progress+45/max(len(batches), 1), done)

@@ -23,7 +23,7 @@ const props = defineProps<{
   densityOnly?: boolean
   /** 重算后续时锚点年份，用于计算剩余跨度 */
   anchorYear?: number
-  /** 已确认的卒年（完全重算第二步），优先于档案 death_year */
+  /** 推演余生时展示用卒年上界（档案或预览），不参与节点数计算 */
   overrideEndYear?: number
 }>()
 
@@ -126,7 +126,7 @@ function toggleExpanded() {
 
 <template>
   <div v-if="densityOnly" class="timeline-config density-only">
-    <div class="block-label">后续节点密度</div>
+      <div class="block-label">推演后续 · 节点数</div>
 
     <button
       type="button"
@@ -148,7 +148,7 @@ function toggleExpanded() {
     <Transition name="config-panel">
       <div v-if="expanded" class="config-panel">
         <p class="density-hint">
-          基于已确认寿命计算剩余跨度。节点数随跨度自动适配；AI 按关键事件安排年份，非机械间隔。
+          本次仅新增指定个数的后续节点；年份由 AI 按事件安排，与寿命/卒年无机械对应。
         </p>
         <div class="form-row slider-row">
           <span class="field-label">目标节点数（约）</span>
@@ -216,6 +216,22 @@ function toggleExpanded() {
         </el-radio-group>
         <p class="density-hint">
           细腻模式在史实严谨前提下加厚 events/thoughts；Flash / Pro 均可选，Pro 文笔更细。
+        </p>
+      </div>
+      <div class="form-row era-events-row">
+        <span class="field-label">时代背景与大事记</span>
+        <el-input
+          v-model="config.era_events"
+          type="textarea"
+          :rows="4"
+          :disabled="disabled"
+          placeholder="留空则 AI 自动整理：如三国平民会补充黄巾、官渡、赤壁等对生计的影响；架空/小说世界观可自由创作大事"
+        />
+        <p v-if="profile.era_background" class="density-hint profile-era">
+          档案中的时代背景：{{ profile.era_background }}
+        </p>
+        <p class="density-hint">
+          生成时间轴前会先整理本区间大事，再写入各人生节点；真实历史须符合史实，虚构世界观可自创设定。
         </p>
       </div>
       <div class="form-row instructions-row">

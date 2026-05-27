@@ -41,13 +41,11 @@ export function formatTimelineSummary(
 }
 
 export function formatRegenSummary(
-  anchorYear: number,
-  deathYear: number,
+  _anchorYear: number,
+  _deathYear: number,
   targetNodeCount: number
 ): string {
-  const span = Math.max(0, deathYear - anchorYear)
-  const step = computeStepYears(span, targetNodeCount)
-  return `后续约 ${targetNodeCount} 个节点 · 跨度 ${span} 年 · 参考间隔 ${step} 年`
+  return `后续约 ${targetNodeCount} 个节点（与推演卒年无机械对应）`
 }
 
 const CHUNK_MIN_NODES = 15

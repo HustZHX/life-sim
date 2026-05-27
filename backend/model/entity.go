@@ -107,13 +107,66 @@ type LifeNode struct {
 }
 
 type TimelineVersion struct {
-	ID              string    `json:"id"`
-	CharacterID     string    `json:"character_id"`
-	TimelineID      string    `json:"timeline_id,omitempty"`
-	ParentVersionID string    `json:"parent_version_id,omitempty"`
-	TriggerNodeID   string    `json:"trigger_node_id,omitempty"`
-	ChangeSummary   string    `json:"change_summary,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID                 string    `json:"id"`
+	CharacterID        string    `json:"character_id"`
+	TimelineID         string    `json:"timeline_id,omitempty"`
+	ParentVersionID    string    `json:"parent_version_id,omitempty"`
+	TriggerNodeID      string    `json:"trigger_node_id,omitempty"`
+	ChangeSummary      string    `json:"change_summary,omitempty"`
+	BranchLabel        string    `json:"branch_label,omitempty"`
+	ForkSequence       int       `json:"fork_sequence,omitempty"`
+	ForkNodeID         string    `json:"fork_node_id,omitempty"`
+	DeathYearSnapshot  int       `json:"death_year_snapshot,omitempty"`
+	DeathCauseSnapshot string    `json:"death_cause_snapshot,omitempty"`
+	NodeCount          int       `json:"node_count,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+}
+
+// BranchNode 分支树节点（API 展示用）。
+type BranchNode struct {
+	ID                 string       `json:"id"`
+	ParentID           string       `json:"parent_id,omitempty"`
+	Label              string       `json:"label"`
+	ChangeSummary      string       `json:"change_summary,omitempty"`
+	ForkSequence       int          `json:"fork_sequence,omitempty"`
+	ForkNodeID         string       `json:"fork_node_id,omitempty"`
+	NodeCount          int          `json:"node_count"`
+	DeathYearSnapshot  int          `json:"death_year_snapshot,omitempty"`
+	DeathCauseSnapshot string       `json:"death_cause_snapshot,omitempty"`
+	IsActive           bool         `json:"is_active"`
+	CreatedAt          time.Time    `json:"created_at"`
+	Children           []BranchNode `json:"children,omitempty"`
+}
+
+// BranchTreeResponse 时间轴分支树。
+type BranchTreeResponse struct {
+	TimelineID       string       `json:"timeline_id"`
+	ActiveVersionID  string       `json:"active_version_id"`
+	Roots            []BranchNode `json:"roots"`
+}
+
+// BranchOverviewNodeLite 总览视图节点（仅年份与标题）。
+type BranchOverviewNodeLite struct {
+	Sequence int    `json:"sequence"`
+	Year     int    `json:"year"`
+	Title    string `json:"title"`
+}
+
+// BranchOverviewEntry 总览中的单条分支。
+type BranchOverviewEntry struct {
+	VersionID         string                 `json:"version_id"`
+	Label             string                 `json:"label"`
+	IsActive          bool                   `json:"is_active"`
+	ForkSequence      int                    `json:"fork_sequence,omitempty"`
+	DeathYearSnapshot int                    `json:"death_year_snapshot,omitempty"`
+	Nodes             []BranchOverviewNodeLite `json:"nodes"`
+}
+
+// BranchOverviewResponse 全部分支总览。
+type BranchOverviewResponse struct {
+	TimelineID      string                `json:"timeline_id"`
+	ActiveVersionID string                `json:"active_version_id"`
+	Branches        []BranchOverviewEntry `json:"branches"`
 }
 
 // Timeline 人物下的独立时间轴实例（可有多条）；版本链归属同一条时间轴。
@@ -186,7 +239,10 @@ type RegenerateNodeEventsRequest struct {
 }
 
 type RegenerateNodeEventsResponse struct {
-	Events string `json:"events"`
+	Events              string        `json:"events"`
+	Thoughts            string        `json:"thoughts,omitempty"`
+	PersonalitySnapshot string        `json:"personality_snapshot,omitempty"`
+	TraitChanges        []TraitChange `json:"trait_changes,omitempty"`
 }
 
 // NarrativeChangeRequest 用自然语言叙述变更时间轴
@@ -240,6 +296,8 @@ type TimelineGenerateRequest struct {
 	Model           string `json:"model"`
 	Title           string `json:"title,omitempty"`
 	Instructions    string `json:"instructions,omitempty"`
+	// EraEvents 时代背景与大事记；留空则 AI 按区间自动生成（史实或架空世界观）
+	EraEvents string `json:"era_events,omitempty"`
 	TargetNodeCount int    `json:"target_node_count"`
 	StepYears       int    `json:"step_years,omitempty"`
 	StartYear         int    `json:"start_year"`

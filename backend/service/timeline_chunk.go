@@ -88,15 +88,22 @@ func estimateTimelineChunks(targetNodes, span int) int {
 	return len(specs)
 }
 
+func appendTimelineExtras(user string, cfg timelineJobConfig) string {
+	if cfg.EraContext != "" {
+		user += "\n\n" + cfg.EraContext + "\n（生成节点时须让主角人生与上述时代大事相呼应；节点 year 宜对齐相关大事年份或其后影响期）"
+	}
+	if cfg.Instructions != "" {
+		user += fmt.Sprintf("\n\n用户特殊要求/备注（须优先满足）：\n%s", cfg.Instructions)
+	}
+	return user
+}
+
 func buildTimelineUserContent(profileJSON string, cfg timelineJobConfig, span int) string {
 	user := fmt.Sprintf(
 		"目标约 %d 个节点，生成区间 start_year=%d, end_year=%d（跨度 %d 年），参考间隔约 %d 年（非强制，以关键事件为准）\n人物档案：\n%s",
 		cfg.TargetNodeCount, cfg.StartYear, cfg.EndYear, span, cfg.StepYears, profileJSON,
 	)
-	if cfg.Instructions != "" {
-		user += fmt.Sprintf("\n\n用户特殊要求/备注（须优先满足）：\n%s", cfg.Instructions)
-	}
-	return user
+	return appendTimelineExtras(user, cfg)
 }
 
 func buildTimelineUserWithoutProfile(cfg timelineJobConfig, span int) string {
@@ -104,10 +111,7 @@ func buildTimelineUserWithoutProfile(cfg timelineJobConfig, span int) string {
 		"请根据上文人物档案生成时间轴。目标约 %d 个节点，生成区间 start_year=%d, end_year=%d（跨度 %d 年），参考间隔约 %d 年（非强制，以关键事件为准）",
 		cfg.TargetNodeCount, cfg.StartYear, cfg.EndYear, span, cfg.StepYears,
 	)
-	if cfg.Instructions != "" {
-		user += fmt.Sprintf("\n\n用户特殊要求/备注（须优先满足）：\n%s", cfg.Instructions)
-	}
-	return user
+	return appendTimelineExtras(user, cfg)
 }
 
 func buildTimelineChunkUser(profileJSON string, cfg timelineJobConfig, chunk timelineChunkSpec, span int) string {
@@ -116,10 +120,7 @@ func buildTimelineChunkUser(profileJSON string, cfg timelineJobConfig, chunk tim
 		chunk.ChunkIndex+1, chunk.TotalChunks, chunk.TargetNodes,
 		chunk.StartYear, chunk.EndYear, span, chunk.SequenceStart, cfg.StepYears, profileJSON,
 	)
-	if cfg.Instructions != "" {
-		user += fmt.Sprintf("\n\n用户特殊要求/备注（须优先满足）：\n%s", cfg.Instructions)
-	}
-	return user
+	return appendTimelineExtras(user, cfg)
 }
 
 func buildTimelineContinuationUser(profileJSON string, cfg timelineJobConfig, chunk timelineChunkSpec, prevTailJSON string) string {
@@ -128,8 +129,5 @@ func buildTimelineContinuationUser(profileJSON string, cfg timelineJobConfig, ch
 		chunk.ChunkIndex+1, chunk.TotalChunks, chunk.TargetNodes,
 		chunk.StartYear, chunk.EndYear, chunk.SequenceStart, profileJSON, prevTailJSON,
 	)
-	if cfg.Instructions != "" {
-		user += fmt.Sprintf("\n\n用户特殊要求/备注：\n%s", cfg.Instructions)
-	}
-	return user
+	return appendTimelineExtras(user, cfg)
 }

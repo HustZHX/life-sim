@@ -6,7 +6,7 @@ export type NarrativeDensity = 'standard' | 'rich'
 
 export const DEFAULT_AI_MODEL: AIModelId = 'flash'
 
-/** 完全重算后续时间轴默认使用 Pro */
+/** 推演余生默认使用 Pro */
 export const DEFAULT_CASCADE_MODEL: AIModelId = 'pro'
 
 const VALID = new Set<string>(AI_MODEL_IDS)
