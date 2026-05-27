@@ -105,6 +105,7 @@ CREATE INDEX IF NOT EXISTS idx_versions_char ON timeline_versions(character_id);
 		return err
 	}
 	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN model TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN stage_text TEXT DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE life_nodes ADD COLUMN entities_json TEXT DEFAULT '{}'`)
 	_, _ = s.db.Exec(`ALTER TABLE life_nodes ADD COLUMN scene_json TEXT DEFAULT '{}'`)
 	_, _ = s.db.Exec(`PRAGMA journal_mode=WAL`)
@@ -124,6 +125,31 @@ CREATE TABLE IF NOT EXISTS timelines (
 );
 CREATE INDEX IF NOT EXISTS idx_timelines_char ON timelines(character_id);
 CREATE INDEX IF NOT EXISTS idx_versions_timeline ON timeline_versions(timeline_id);
+`)
+	if err != nil {
+		return err
+	}
+	_, _ = s.db.Exec(`ALTER TABLE timeline_versions ADD COLUMN branch_label TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE timeline_versions ADD COLUMN fork_sequence INTEGER DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE timeline_versions ADD COLUMN fork_node_id TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE timeline_versions ADD COLUMN death_year_snapshot INTEGER DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE timeline_versions ADD COLUMN death_cause_snapshot TEXT DEFAULT ''`)
+	_, err = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS narrative_artifacts (
+  id TEXT PRIMARY KEY,
+  character_id TEXT NOT NULL REFERENCES characters(id),
+  version_id TEXT NOT NULL,
+  node_id TEXT DEFAULT '',
+  kind TEXT NOT NULL,
+  from_sequence INTEGER DEFAULT 0,
+  to_sequence INTEGER DEFAULT 0,
+  content TEXT NOT NULL,
+  model TEXT DEFAULT '',
+  created_at DATETIME NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_narrative_cache ON narrative_artifacts(
+  version_id, kind, node_id, from_sequence, to_sequence
+);
 `)
 	if err != nil {
 		return err
@@ -283,14 +309,52 @@ func (s *Store) GetProfile(characterID string) (*model.Profile, error) {
 
 func (s *Store) CreateVersion(v *model.TimelineVersion) error {
 	_, err := s.db.Exec(
-		`INSERT INTO timeline_versions (id, character_id, timeline_id, parent_version_id, trigger_node_id, change_summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		v.ID, v.CharacterID, v.TimelineID, v.ParentVersionID, v.TriggerNodeID, v.ChangeSummary, v.CreatedAt,
+		`INSERT INTO timeline_versions (
+			id, character_id, timeline_id, parent_version_id, trigger_node_id, change_summary,
+			branch_label, fork_sequence, fork_node_id, death_year_snapshot, death_cause_snapshot, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		v.ID, v.CharacterID, v.TimelineID, v.ParentVersionID, v.TriggerNodeID, v.ChangeSummary,
+		v.BranchLabel, v.ForkSequence, v.ForkNodeID, v.DeathYearSnapshot, v.DeathCauseSnapshot, v.CreatedAt,
 	)
 	return err
 }
 
+func (s *Store) UpdateVersionDeathSnapshot(versionID string, deathYear int, deathCause string) error {
+	_, err := s.db.Exec(
+		`UPDATE timeline_versions SET death_year_snapshot=?, death_cause_snapshot=? WHERE id=?`,
+		deathYear, deathCause, versionID,
+	)
+	return err
+}
+
+func (s *Store) scanTimelineVersionRow(row interface {
+	Scan(dest ...interface{}) error
+}) (*model.TimelineVersion, error) {
+	var v model.TimelineVersion
+	var created string
+	err := row.Scan(
+		&v.ID, &v.CharacterID, &v.TimelineID, &v.ParentVersionID, &v.TriggerNodeID, &v.ChangeSummary,
+		&v.BranchLabel, &v.ForkSequence, &v.ForkNodeID, &v.DeathYearSnapshot, &v.DeathCauseSnapshot, &created,
+	)
+	if err != nil {
+		return nil, err
+	}
+	v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	if v.CreatedAt.IsZero() {
+		v.CreatedAt, _ = time.Parse("2006-01-02 15:04:05.999999999-07:00", created)
+	}
+	v.NodeCount, _ = s.CountNodesByVersion(v.ID)
+	return &v, nil
+}
+
+func (s *Store) versionSelectCols() string {
+	return `id, character_id, COALESCE(timeline_id,''), parent_version_id, trigger_node_id, change_summary,
+		COALESCE(branch_label,''), COALESCE(fork_sequence,0), COALESCE(fork_node_id,''),
+		COALESCE(death_year_snapshot,0), COALESCE(death_cause_snapshot,''), created_at`
+}
+
 func (s *Store) ListVersions(characterID, timelineID string) ([]model.TimelineVersion, error) {
-	query := `SELECT id, character_id, COALESCE(timeline_id,''), parent_version_id, trigger_node_id, change_summary, created_at FROM timeline_versions WHERE character_id = ?`
+	query := `SELECT ` + s.versionSelectCols() + ` FROM timeline_versions WHERE character_id = ?`
 	args := []interface{}{characterID}
 	if timelineID != "" {
 		query += ` AND timeline_id = ?`
@@ -304,32 +368,21 @@ func (s *Store) ListVersions(characterID, timelineID string) ([]model.TimelineVe
 	defer rows.Close()
 	var list []model.TimelineVersion
 	for rows.Next() {
-		var v model.TimelineVersion
-		var created string
-		if err := rows.Scan(&v.ID, &v.CharacterID, &v.TimelineID, &v.ParentVersionID, &v.TriggerNodeID, &v.ChangeSummary, &created); err != nil {
+		v, err := s.scanTimelineVersionRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-		if v.CreatedAt.IsZero() {
-			v.CreatedAt, _ = time.Parse("2006-01-02 15:04:05.999999999-07:00", created)
-		}
-		list = append(list, v)
+		list = append(list, *v)
 	}
 	return list, nil
 }
 
 func (s *Store) GetVersion(id string) (*model.TimelineVersion, error) {
 	row := s.db.QueryRow(
-		`SELECT id, character_id, COALESCE(timeline_id,''), parent_version_id, trigger_node_id, change_summary, created_at FROM timeline_versions WHERE id = ?`,
+		`SELECT `+s.versionSelectCols()+` FROM timeline_versions WHERE id = ?`,
 		id,
 	)
-	var v model.TimelineVersion
-	var created string
-	if err := row.Scan(&v.ID, &v.CharacterID, &v.TimelineID, &v.ParentVersionID, &v.TriggerNodeID, &v.ChangeSummary, &created); err != nil {
-		return nil, err
-	}
-	v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-	return &v, nil
+	return s.scanTimelineVersionRow(row)
 }
 
 func (s *Store) SaveNodes(nodes []model.LifeNode) error {
@@ -413,7 +466,7 @@ func (s *Store) CreateJob(characterID, jobType, modelID string) (*model.Job, err
 		UpdatedAt:   now,
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO jobs (id, character_id, type, status, progress, model, result_json, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, '', '', ?, ?)`,
+		`INSERT INTO jobs (id, character_id, type, status, progress, stage_text, model, result_json, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, '', ?, '', '', ?, ?)`,
 		j.ID, j.CharacterID, j.Type, j.Status, j.Progress, j.Model, j.CreatedAt, j.UpdatedAt,
 	)
 	return j, err
@@ -422,8 +475,8 @@ func (s *Store) CreateJob(characterID, jobType, modelID string) (*model.Job, err
 func (s *Store) UpdateJob(j *model.Job) error {
 	j.UpdatedAt = time.Now()
 	_, err := s.db.Exec(
-		`UPDATE jobs SET status=?, progress=?, model=?, result_json=?, error=?, updated_at=? WHERE id=?`,
-		j.Status, j.Progress, j.Model, j.Result, j.Error, j.UpdatedAt, j.ID,
+		`UPDATE jobs SET status=?, progress=?, stage_text=?, model=?, result_json=?, error=?, updated_at=? WHERE id=?`,
+		j.Status, j.Progress, j.StageText, j.Model, j.Result, j.Error, j.UpdatedAt, j.ID,
 	)
 	return err
 }
@@ -448,12 +501,12 @@ func (s *Store) MarkJobFailed(jobID, msg string) error {
 
 func (s *Store) GetJob(id string) (*model.Job, error) {
 	row := s.db.QueryRow(
-		`SELECT id, character_id, type, status, progress, COALESCE(model,''), result_json, error, created_at, updated_at FROM jobs WHERE id = ?`,
+		`SELECT id, character_id, type, status, progress, COALESCE(stage_text,''), COALESCE(model,''), result_json, error, created_at, updated_at FROM jobs WHERE id = ?`,
 		id,
 	)
 	var j model.Job
 	var created, updated string
-	if err := row.Scan(&j.ID, &j.CharacterID, &j.Type, &j.Status, &j.Progress, &j.Model, &j.Result, &j.Error, &created, &updated); err != nil {
+	if err := row.Scan(&j.ID, &j.CharacterID, &j.Type, &j.Status, &j.Progress, &j.StageText, &j.Model, &j.Result, &j.Error, &created, &updated); err != nil {
 		return nil, err
 	}
 	j.CreatedAt = parseDBTime(created)

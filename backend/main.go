@@ -56,7 +56,8 @@ func main() {
 
 	aiClient := ai.NewClient(&cfg.DeepSeek, promptDir)
 	charSvc := service.NewCharacterService(st, aiClient, cfg)
-	charHandler := handler.NewCharacterHandler(charSvc)
+	narrSvc := service.NewNarrativeService(st, aiClient)
+	charHandler := handler.NewCharacterHandler(charSvc, narrSvc)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -86,15 +87,23 @@ func main() {
 		v1.GET("/characters/:id/profile", charHandler.GetProfile)
 		v1.POST("/characters/:id/timeline/recommendations", charHandler.RecommendTimeline)
 		v1.POST("/characters/:id/timeline/generate", charHandler.GenerateTimeline)
+		v1.POST("/characters/:id/timeline/narrative-change", charHandler.ApplyNarrativeChange)
 		v1.GET("/characters/:id/timelines", charHandler.ListTimelines)
 		v1.GET("/characters/:id/timelines/:tid/versions", charHandler.ListVersions)
+		v1.GET("/characters/:id/timelines/:tid/branches", charHandler.ListBranches)
+		v1.GET("/characters/:id/timelines/:tid/branches/overview", charHandler.GetBranchOverview)
+		v1.POST("/characters/:id/timelines/:tid/branches/:vid/activate", charHandler.ActivateBranch)
 		v1.GET("/characters/:id/timeline", charHandler.GetTimeline)
 		v1.GET("/characters/:id/nodes/:nodeId", charHandler.GetNode)
 		v1.POST("/characters/:id/nodes/:nodeId/lifespan/preview", charHandler.PreviewLifespan)
+		v1.POST("/characters/:id/nodes/:nodeId/regenerate-events", charHandler.RegenerateNodeEvents)
 		v1.PATCH("/characters/:id/nodes/:nodeId", charHandler.PatchNode)
 		v1.GET("/characters/:id/versions", charHandler.ListVersions)
 		v1.GET("/characters/:id/versions/:vid/diff", charHandler.GetVersionDiff)
 		v1.POST("/characters/:id/versions/:vid/rollback", charHandler.Rollback)
+		v1.GET("/characters/:id/narratives", charHandler.GetNarrative)
+		v1.POST("/characters/:id/narratives/light-novel", charHandler.GenerateLightNovel)
+		v1.POST("/characters/:id/nodes/:nodeId/narratives/:kind", charHandler.GenerateNodeNarrative)
 		v1.GET("/jobs/:jobId", charHandler.GetJob)
 	}
 

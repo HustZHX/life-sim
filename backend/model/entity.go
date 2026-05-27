@@ -107,13 +107,66 @@ type LifeNode struct {
 }
 
 type TimelineVersion struct {
-	ID              string    `json:"id"`
-	CharacterID     string    `json:"character_id"`
-	TimelineID      string    `json:"timeline_id,omitempty"`
-	ParentVersionID string    `json:"parent_version_id,omitempty"`
-	TriggerNodeID   string    `json:"trigger_node_id,omitempty"`
-	ChangeSummary   string    `json:"change_summary,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID                 string    `json:"id"`
+	CharacterID        string    `json:"character_id"`
+	TimelineID         string    `json:"timeline_id,omitempty"`
+	ParentVersionID    string    `json:"parent_version_id,omitempty"`
+	TriggerNodeID      string    `json:"trigger_node_id,omitempty"`
+	ChangeSummary      string    `json:"change_summary,omitempty"`
+	BranchLabel        string    `json:"branch_label,omitempty"`
+	ForkSequence       int       `json:"fork_sequence,omitempty"`
+	ForkNodeID         string    `json:"fork_node_id,omitempty"`
+	DeathYearSnapshot  int       `json:"death_year_snapshot,omitempty"`
+	DeathCauseSnapshot string    `json:"death_cause_snapshot,omitempty"`
+	NodeCount          int       `json:"node_count,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+}
+
+// BranchNode 分支树节点（API 展示用）。
+type BranchNode struct {
+	ID                 string       `json:"id"`
+	ParentID           string       `json:"parent_id,omitempty"`
+	Label              string       `json:"label"`
+	ChangeSummary      string       `json:"change_summary,omitempty"`
+	ForkSequence       int          `json:"fork_sequence,omitempty"`
+	ForkNodeID         string       `json:"fork_node_id,omitempty"`
+	NodeCount          int          `json:"node_count"`
+	DeathYearSnapshot  int          `json:"death_year_snapshot,omitempty"`
+	DeathCauseSnapshot string       `json:"death_cause_snapshot,omitempty"`
+	IsActive           bool         `json:"is_active"`
+	CreatedAt          time.Time    `json:"created_at"`
+	Children           []BranchNode `json:"children,omitempty"`
+}
+
+// BranchTreeResponse 时间轴分支树。
+type BranchTreeResponse struct {
+	TimelineID       string       `json:"timeline_id"`
+	ActiveVersionID  string       `json:"active_version_id"`
+	Roots            []BranchNode `json:"roots"`
+}
+
+// BranchOverviewNodeLite 总览视图节点（仅年份与标题）。
+type BranchOverviewNodeLite struct {
+	Sequence int    `json:"sequence"`
+	Year     int    `json:"year"`
+	Title    string `json:"title"`
+}
+
+// BranchOverviewEntry 总览中的单条分支。
+type BranchOverviewEntry struct {
+	VersionID         string                 `json:"version_id"`
+	Label             string                 `json:"label"`
+	IsActive          bool                   `json:"is_active"`
+	ForkSequence      int                    `json:"fork_sequence,omitempty"`
+	DeathYearSnapshot int                    `json:"death_year_snapshot,omitempty"`
+	Nodes             []BranchOverviewNodeLite `json:"nodes"`
+}
+
+// BranchOverviewResponse 全部分支总览。
+type BranchOverviewResponse struct {
+	TimelineID      string                `json:"timeline_id"`
+	ActiveVersionID string                `json:"active_version_id"`
+	Branches        []BranchOverviewEntry `json:"branches"`
 }
 
 // Timeline 人物下的独立时间轴实例（可有多条）；版本链归属同一条时间轴。
@@ -133,6 +186,7 @@ type Job struct {
 	Type        string    `json:"type"`
 	Status      string    `json:"status"`
 	Progress    int       `json:"progress"`
+	StageText   string    `json:"stage_text,omitempty"`
 	Model       string    `json:"model,omitempty"`
 	Result      string    `json:"result,omitempty"`
 	Error       string    `json:"error,omitempty"`
@@ -144,7 +198,23 @@ const (
 	PatchModeFullCascade       = "full_cascade"
 	PatchModeInnerCurrent      = "inner_current"
 	PatchModeInnerSubsequent   = "inner_subsequent"
+
+	NarrativeStandard = "standard"
+	NarrativeRich     = "rich"
+
+	NarrativeKindLightNovel = "light_novel"
+	NarrativeKindDiary      = "diary"
+	NarrativeKindLetter     = "letter"
+	NarrativeKindArchive    = "archive"
 )
+
+// NormalizeNarrativeDensity 规范叙事密度，默认 rich（两阶段厚叙事）。
+func NormalizeNarrativeDensity(d string) string {
+	if d == NarrativeStandard {
+		return NarrativeStandard
+	}
+	return NarrativeRich
+}
 
 // PatchNodeRequest 编辑节点请求
 type PatchNodeRequest struct {
@@ -158,6 +228,29 @@ type PatchNodeRequest struct {
 	StepYears           int    `json:"step_years,omitempty"`
 	ConfirmedDeathYear  int    `json:"confirmed_death_year,omitempty"`
 	ConfirmedDeathCause string `json:"confirmed_death_cause,omitempty"`
+	LifespanReasoning   string `json:"lifespan_reasoning,omitempty"`
+	ChangeSummary       string `json:"change_summary,omitempty"`
+}
+
+// RegenerateNodeEventsRequest 根据标题重新生成节点经历
+type RegenerateNodeEventsRequest struct {
+	Title string `json:"title"`
+	Model string `json:"model"`
+}
+
+type RegenerateNodeEventsResponse struct {
+	Events              string        `json:"events"`
+	Thoughts            string        `json:"thoughts,omitempty"`
+	PersonalitySnapshot string        `json:"personality_snapshot,omitempty"`
+	TraitChanges        []TraitChange `json:"trait_changes,omitempty"`
+}
+
+// NarrativeChangeRequest 用自然语言叙述变更时间轴
+type NarrativeChangeRequest struct {
+	TimelineID      string `json:"timeline_id"`
+	Instruction     string `json:"instruction"`
+	Model           string `json:"model"`
+	TargetNodeCount int    `json:"target_node_count,omitempty"`
 }
 
 // LifespanPreviewRequest 预览寿命（编辑节点后）
@@ -171,9 +264,10 @@ type LifespanPreviewRequest struct {
 
 // LifespanPreviewResponse 寿命预览结果
 type LifespanPreviewResponse struct {
-	CurrentDeathYear int                  `json:"current_death_year"`
-	AnchorYear       int                  `json:"anchor_year"`
-	Preview          LifespanRecalcResult `json:"preview"`
+	CurrentDeathYear  int                  `json:"current_death_year"`
+	AnchorYear        int                  `json:"anchor_year"`
+	Preview           LifespanRecalcResult `json:"preview"`
+	ContextTokenHint  int                  `json:"context_token_hint,omitempty"`
 }
 
 // ProfileGenerateRequest 生成档案请求
@@ -202,10 +296,13 @@ type TimelineGenerateRequest struct {
 	Model           string `json:"model"`
 	Title           string `json:"title,omitempty"`
 	Instructions    string `json:"instructions,omitempty"`
+	// EraEvents 时代背景与大事记；留空则 AI 按区间自动生成（史实或架空世界观）
+	EraEvents string `json:"era_events,omitempty"`
 	TargetNodeCount int    `json:"target_node_count"`
 	StepYears       int    `json:"step_years,omitempty"`
-	StartYear       int    `json:"start_year"`
-	EndYear         int    `json:"end_year"`
+	StartYear         int    `json:"start_year"`
+	EndYear           int    `json:"end_year"`
+	NarrativeDensity  string `json:"narrative_density,omitempty"`
 }
 
 // TimelineRecommendation AI 推荐的时间轴生成配置
@@ -257,4 +354,42 @@ type CharacterHistoryItem struct {
 	TimelineCount    int       `json:"timeline_count"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// NarrativeArtifact 按需生成的叙事文本缓存
+type NarrativeArtifact struct {
+	ID           string    `json:"id"`
+	CharacterID  string    `json:"character_id"`
+	VersionID    string    `json:"version_id"`
+	NodeID       string    `json:"node_id,omitempty"`
+	Kind         string    `json:"kind"`
+	FromSequence int       `json:"from_sequence,omitempty"`
+	ToSequence   int       `json:"to_sequence,omitempty"`
+	Content      string    `json:"content"`
+	Model        string    `json:"model,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// NarrativeArtifactQuery 缓存查询键
+type NarrativeArtifactQuery struct {
+	VersionID    string
+	NodeID       string
+	Kind         string
+	FromSequence int
+	ToSequence   int
+}
+
+// LightNovelRequest 生成轻小说
+type LightNovelRequest struct {
+	Model        string `json:"model"`
+	VersionID    string `json:"version_id"`
+	FromSequence int    `json:"from_sequence"`
+	ToSequence   int    `json:"to_sequence"`
+	Force        bool   `json:"force,omitempty"`
+}
+
+// NodeNarrativeRequest 单节点多视角生成
+type NodeNarrativeRequest struct {
+	Model string `json:"model"`
+	Force bool   `json:"force,omitempty"`
 }

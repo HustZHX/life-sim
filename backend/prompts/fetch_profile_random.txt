@@ -6,7 +6,7 @@
   "birth_year": 1985,
   "death_year": 2060,
   "era": "时代标签",
-  "era_background": "时代背景",
+  "era_background": "时代背景（含该时代影响普通人生活的大事脉络，如战乱、灾荒、政令；架空世界观则写世界观要点）",
   "personality_initial": "初始性格",
   "beliefs_motto": "信念与格言",
   "experiences": "早年经历概述",

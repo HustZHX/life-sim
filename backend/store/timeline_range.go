@@ -83,8 +83,8 @@ func ResolveTimelineRange(cfg TimelineRangeConfig, profile *model.Profile) (Time
 	return out, nil
 }
 
-// ResolveRegenerateTailRange 重算后续：从锚点年份到去世，按目标节点数推算间隔。
-func ResolveRegenerateTailRange(anchorYear, deathYear, targetNodeCount int) (stepYears, targetNodes int) {
+// ResolveRegenerateTailRange 推演余生：节点数由用户配置，不与寿命跨度机械对应。
+func ResolveRegenerateTailRange(_anchorYear, _deathYear, targetNodeCount int) (stepYears, targetNodes int) {
 	if targetNodeCount <= 0 {
 		targetNodeCount = DefaultTargetNodeCount
 	}
@@ -94,13 +94,6 @@ func ResolveRegenerateTailRange(anchorYear, deathYear, targetNodeCount int) (ste
 	if targetNodeCount > 50 {
 		targetNodeCount = 50
 	}
-	endYear := deathYear
-	if endYear <= anchorYear {
-		endYear = EffectiveDeathYear(anchorYear, deathYear)
-	}
-	span := endYear - anchorYear
-	if span < 0 {
-		span = 0
-	}
-	return ComputeStepYears(span, targetNodeCount), targetNodeCount
+	// 弱提示间隔，非 寿命跨度÷节点数
+	return 3, targetNodeCount
 }

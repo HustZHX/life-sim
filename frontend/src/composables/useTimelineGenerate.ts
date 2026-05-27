@@ -1,8 +1,9 @@
 import { ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { DEFAULT_TARGET_NODE_COUNT, computeStepYears } from '@/utils/timelineDensity'
+import { DEFAULT_TARGET_NODE_COUNT, computeStepYears, estimateTimelineChunks } from '@/utils/timelineDensity'
 import { api, pollJob, type AIModelId, type TimelineConfig } from '@/api/client'
-import { modelDisplayLabel } from '@/constants/models'
+import { modelDisplayLabel, estimateTimelineDuration, narrativeDensityLabel, normalizeNarrativeDensity } from '@/constants/models'
+import type { NarrativeDensity } from '@/constants/models'
 
 function escapeHtml(text: string): string {
   return text
@@ -17,6 +18,7 @@ function buildTimelineConfirmMessage(options: {
   config?: TimelineConfig
   modelLabel: string
   estTime: string
+  density: NarrativeDensity
 }): string {
   const name = options.displayName ? `「${escapeHtml(options.displayName)}」` : '该人物'
   const cfg = options.config
@@ -36,12 +38,17 @@ function buildTimelineConfirmMessage(options: {
       rows.push(['节点规模', `约 ${cfg.target_node_count} 个`])
       const step = computeStepYears(span, cfg.target_node_count)
       rows.push(['参考间隔', `约 ${step} 年`])
+      const chunks = estimateTimelineChunks(cfg.target_node_count, span)
+      if (chunks > 1) {
+        rows.push(['生成方式', `分 ${chunks} 段生成（进度更准确）`])
+      }
     }
   } else {
     rows.push(['节点规模', `约 ${DEFAULT_TARGET_NODE_COUNT} 个（全生命周期）`])
   }
 
   rows.push(['AI 模型', escapeHtml(options.modelLabel)])
+  rows.push(['叙事密度', escapeHtml(narrativeDensityLabel(options.density))])
   rows.push(['预计耗时', escapeHtml(options.estTime)])
 
   const rowHtml = rows
@@ -74,8 +81,10 @@ export function useTimelineGenerate() {
     options?: { displayName?: string; config?: TimelineConfig }
   ): Promise<TimelineGenerateResult> {
     const modelLabel = modelDisplayLabel(aiModel)
-    const estTime = aiModel === 'pro' ? '1～3 分钟' : '约 30 秒～1 分钟'
     const cfg = options?.config
+    const density = normalizeNarrativeDensity(cfg?.narrative_density)
+    const targetNodes = cfg?.target_node_count ?? DEFAULT_TARGET_NODE_COUNT
+    const estTime = estimateTimelineDuration(aiModel, density, targetNodes)
 
     try {
       await ElMessageBox.confirm(
@@ -84,6 +93,7 @@ export function useTimelineGenerate() {
           config: cfg,
           modelLabel,
           estTime,
+          density,
         }),
         '确认生成时间轴',
         {
@@ -108,7 +118,8 @@ export function useTimelineGenerate() {
       const done = await pollJob(job.id, (j) => {
         progress.value = Math.max(j.progress, 5)
         if (j.status === 'running') {
-          statusText.value = `生成中 ${j.progress}% · ${modelDisplayLabel(j.model || aiModel)}`
+          const stage = j.stage_text ? `${j.stage_text} · ` : ''
+          statusText.value = `${stage}${j.progress}% · ${modelDisplayLabel(j.model || aiModel)}`
         }
       })
       if (done.status === 'failed') throw new Error(done.error || '生成失败')

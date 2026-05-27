@@ -125,7 +125,55 @@ export interface TimelineVersion {
   parent_version_id?: string
   trigger_node_id?: string
   change_summary?: string
+  branch_label?: string
+  fork_sequence?: number
+  fork_node_id?: string
+  death_year_snapshot?: number
+  death_cause_snapshot?: string
+  node_count?: number
   created_at: string
+}
+
+export interface BranchNode {
+  id: string
+  parent_id?: string
+  label: string
+  change_summary?: string
+  fork_sequence?: number
+  fork_node_id?: string
+  node_count: number
+  death_year_snapshot?: number
+  death_cause_snapshot?: string
+  is_active: boolean
+  created_at: string
+  children?: BranchNode[]
+}
+
+export interface BranchTreeResponse {
+  timeline_id: string
+  active_version_id: string
+  roots: BranchNode[]
+}
+
+export interface BranchOverviewNodeLite {
+  sequence: number
+  year: number
+  title: string
+}
+
+export interface BranchOverviewEntry {
+  version_id: string
+  label: string
+  is_active: boolean
+  fork_sequence?: number
+  death_year_snapshot?: number
+  nodes: BranchOverviewNodeLite[]
+}
+
+export interface BranchOverviewResponse {
+  timeline_id: string
+  active_version_id: string
+  branches: BranchOverviewEntry[]
 }
 
 export interface Job {
@@ -134,6 +182,7 @@ export interface Job {
   type: string
   status: string
   progress: number
+  stage_text?: string
   model?: string
   result?: string
   error?: string
@@ -149,14 +198,20 @@ export interface AIModel {
   quality: string
 }
 
+export type NarrativeDensity = 'standard' | 'rich'
+
 export interface TimelineConfig {
   title?: string
   instructions?: string
+  /** 时代背景与大事记；留空则由 AI 按生成区间自动整理 */
+  era_events?: string
   target_node_count: number
   start_year: number
   end_year: number
   /** 由前端/后端按跨度推算，供展示 */
   step_years?: number
+  /** standard=单次生成；rich=骨架+叙事扩写（默认） */
+  narrative_density?: NarrativeDensity
 }
 
 export interface TimelineRecommendation {
@@ -179,6 +234,7 @@ export interface PatchNodePayload {
   target_node_count?: number
   confirmed_death_year?: number
   confirmed_death_cause?: string
+  lifespan_reasoning?: string
 }
 
 export interface LifespanPreview {
@@ -192,6 +248,7 @@ export interface LifespanPreviewResponse {
   current_death_year: number
   anchor_year: number
   preview: LifespanPreview
+  context_token_hint?: number
 }
 
 export interface NodeFieldChange {
@@ -207,6 +264,46 @@ export interface VersionDiff {
   version_id: string
   parent_version_id?: string
   changes: NodeFieldChange[]
+}
+
+export type NarrativeKind = 'light_novel' | 'diary' | 'letter' | 'archive'
+
+export interface NarrativeArtifact {
+  id: string
+  character_id: string
+  version_id: string
+  node_id?: string
+  kind: NarrativeKind
+  from_sequence?: number
+  to_sequence?: number
+  content: string
+  model?: string
+  created_at?: string
+}
+
+export interface LightNovelRequest {
+  model?: AIModelId
+  version_id: string
+  from_sequence: number
+  to_sequence: number
+  force?: boolean
+}
+
+export interface NodeNarrativeRequest {
+  model?: AIModelId
+  force?: boolean
+}
+
+export interface NarrativeCachedResponse {
+  artifact: NarrativeArtifact
+  cached: true
+}
+
+export interface NarrativeChangeRequest {
+  timeline_id: string
+  instruction: string
+  model?: AIModelId
+  target_node_count?: number
 }
 
 async function unwrap<T>(p: Promise<{ data: ApiResponse<T> }>): Promise<T> {
@@ -298,12 +395,14 @@ export const api = {
   ) =>
     unwrap<Job>(
       http.post(`/api/v1/characters/${id}/timeline/generate`, {
+        era_events: config?.era_events,
         model,
         title: config?.title,
         instructions: config?.instructions,
         target_node_count: config?.target_node_count,
         start_year: config?.start_year,
         end_year: config?.end_year,
+        narrative_density: config?.narrative_density,
       })
     ),
 
@@ -340,6 +439,20 @@ export const api = {
       http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/lifespan/preview`, body)
     ),
 
+  regenerateNodeEvents: (
+    charId: string,
+    nodeId: string,
+    body: { title: string; model: AIModelId }
+  ) =>
+    unwrap<{
+      events: string
+      thoughts?: string
+      personality_snapshot?: string
+      trait_changes?: TraitChange[]
+    }>(
+      http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/regenerate-events`, body)
+    ),
+
   getJob: (jobId: string) => unwrap<Job>(http.get(`/api/v1/jobs/${jobId}`)),
 
   listVersions: (id: string, timelineId?: string) =>
@@ -349,11 +462,58 @@ export const api = {
         : http.get(`/api/v1/characters/${id}/versions`)
     ),
 
+  listBranches: (charId: string, timelineId: string) =>
+    unwrap<BranchTreeResponse>(
+      http.get(`/api/v1/characters/${charId}/timelines/${timelineId}/branches`)
+    ),
+
+  getBranchOverview: (charId: string, timelineId: string) =>
+    unwrap<BranchOverviewResponse>(
+      http.get(`/api/v1/characters/${charId}/timelines/${timelineId}/branches/overview`)
+    ),
+
+  activateBranch: (charId: string, timelineId: string, versionId: string) =>
+    unwrap<Character>(
+      http.post(`/api/v1/characters/${charId}/timelines/${timelineId}/branches/${versionId}/activate`)
+    ),
+
   getVersionDiff: (charId: string, vid: string) =>
     unwrap<VersionDiff>(http.get(`/api/v1/characters/${charId}/versions/${vid}/diff`)),
 
   rollback: (charId: string, vid: string) =>
     unwrap<Character>(http.post(`/api/v1/characters/${charId}/versions/${vid}/rollback`)),
+
+  getNarrative: (
+    charId: string,
+    params: {
+      version_id: string
+      kind: NarrativeKind
+      node_id?: string
+      from_sequence?: number
+      to_sequence?: number
+    }
+  ) =>
+    unwrap<NarrativeArtifact>(
+      http.get(`/api/v1/characters/${charId}/narratives`, { params })
+    ),
+
+  generateLightNovel: (charId: string, body: LightNovelRequest) =>
+    unwrap<Job | NarrativeCachedResponse>(
+      http.post(`/api/v1/characters/${charId}/narratives/light-novel`, body)
+    ),
+
+  applyNarrativeChange: (charId: string, body: NarrativeChangeRequest) =>
+    unwrap<Job>(http.post(`/api/v1/characters/${charId}/timeline/narrative-change`, body)),
+
+  generateNodeNarrative: (
+    charId: string,
+    nodeId: string,
+    kind: Exclude<NarrativeKind, 'light_novel'>,
+    body?: NodeNarrativeRequest
+  ) =>
+    unwrap<Job | NarrativeCachedResponse>(
+      http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/narratives/${kind}`, body ?? {})
+    ),
 }
 
 export async function pollJob(

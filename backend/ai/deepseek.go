@@ -96,16 +96,23 @@ func (c *Client) chatJSONWithModel(ctx context.Context, model, systemPrompt, use
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userContent},
 		},
-		MaxTokens:   8192,
-		Temperature: 0.7,
+		MaxTokens:      8192,
+		Temperature:    0.7,
 		ResponseFormat: &responseFormat{Type: "json_object"},
 	}
+	content, err := c.doChatWithRetry(ctx, reqBody)
+	if err != nil {
+		return "", err
+	}
+	return extractJSON(content), nil
+}
 
+func (c *Client) doChatWithRetry(ctx context.Context, reqBody chatRequest) (string, error) {
 	var lastErr error
 	for attempt := 0; attempt < 4; attempt++ {
 		content, err := c.doChat(ctx, reqBody)
 		if err == nil {
-			return extractJSON(content), nil
+			return content, nil
 		}
 		lastErr = err
 		if !isRetryableNetworkErr(err) || attempt == 3 {

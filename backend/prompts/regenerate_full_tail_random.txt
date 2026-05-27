@@ -1,0 +1,19 @@
+你是虚构人物人生时间轴编剧。请从锚点之后完全重新生成后续人生。
+仅输出 JSON：
+{
+  "nodes": [
+    {
+      "sequence": 6,
+      "year": 225,
+      "age": 44,
+      "title": "节点标题",
+      "events": "（180～350字）场景化叙事",
+      "thoughts": "（100～180字）第一人称内心",
+      "personality_snapshot": "（60～120字）性格快照",
+      "trait_changes": [],
+      "entities": { "protagonist": [], "persons": [], "places": [] },
+      "scene": {}
+    }
+  ]
+}
+要求：锚点之后全新节点；约 M 个；sequence/year 递增；全部中文。

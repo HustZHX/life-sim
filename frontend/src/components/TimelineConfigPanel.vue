@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { api, type Profile, type TimelineConfig, type TimelineRecommendation } from '@/api/client'
 import type { AIModelId } from '@/constants/models'
-import { DEFAULT_AI_MODEL } from '@/constants/models'
+import { DEFAULT_AI_MODEL, DEFAULT_NARRATIVE_DENSITY } from '@/constants/models'
 import {
   DEFAULT_TARGET_NODE_COUNT,
   MAX_TARGET_NODE_COUNT,
@@ -23,7 +23,7 @@ const props = defineProps<{
   densityOnly?: boolean
   /** 重算后续时锚点年份，用于计算剩余跨度 */
   anchorYear?: number
-  /** 已确认的卒年（完全重算第二步），优先于档案 death_year */
+  /** 推演余生时展示用卒年上界（档案或预览），不参与节点数计算 */
   overrideEndYear?: number
 }>()
 
@@ -84,6 +84,7 @@ watch(
       config.value.end_year = effectiveDeathYear(p)
     }
     if (!config.value.target_node_count) config.value.target_node_count = DEFAULT_TARGET_NODE_COUNT
+    if (!config.value.narrative_density) config.value.narrative_density = DEFAULT_NARRATIVE_DENSITY
   },
   { immediate: true }
 )
@@ -109,6 +110,7 @@ async function fetchRecommendations() {
 function applyRecommendation(rec: TimelineRecommendation, index: number) {
   selectedRecIndex.value = index
   config.value = {
+    ...config.value,
     target_node_count: rec.target_node_count,
     start_year: rec.start_year,
     end_year: rec.end_year,
@@ -124,7 +126,7 @@ function toggleExpanded() {
 
 <template>
   <div v-if="densityOnly" class="timeline-config density-only">
-    <div class="block-label">后续节点密度</div>
+      <div class="block-label">推演后续 · 节点数</div>
 
     <button
       type="button"
@@ -146,7 +148,7 @@ function toggleExpanded() {
     <Transition name="config-panel">
       <div v-if="expanded" class="config-panel">
         <p class="density-hint">
-          基于已确认寿命计算剩余跨度。节点数随跨度自动适配；AI 按关键事件安排年份，非机械间隔。
+          本次仅新增指定个数的后续节点；年份由 AI 按事件安排，与寿命/卒年无机械对应。
         </p>
         <div class="form-row slider-row">
           <span class="field-label">目标节点数（约）</span>
@@ -206,6 +208,32 @@ function toggleExpanded() {
     </p>
 
     <div class="custom-form">
+      <div class="form-row density-mode-row">
+        <span class="field-label">叙事密度</span>
+        <el-radio-group v-model="config.narrative_density" :disabled="disabled">
+          <el-radio value="rich">细腻（骨架 + 扩写，推荐）</el-radio>
+          <el-radio value="standard">标准（单次生成，更快）</el-radio>
+        </el-radio-group>
+        <p class="density-hint">
+          细腻模式在史实严谨前提下加厚 events/thoughts；Flash / Pro 均可选，Pro 文笔更细。
+        </p>
+      </div>
+      <div class="form-row era-events-row">
+        <span class="field-label">时代背景与大事记</span>
+        <el-input
+          v-model="config.era_events"
+          type="textarea"
+          :rows="4"
+          :disabled="disabled"
+          placeholder="留空则 AI 自动整理：如三国平民会补充黄巾、官渡、赤壁等对生计的影响；架空/小说世界观可自由创作大事"
+        />
+        <p v-if="profile.era_background" class="density-hint profile-era">
+          档案中的时代背景：{{ profile.era_background }}
+        </p>
+        <p class="density-hint">
+          生成时间轴前会先整理本区间大事，再写入各人生节点；真实历史须符合史实，虚构世界观可自创设定。
+        </p>
+      </div>
       <div class="form-row instructions-row">
         <span class="field-label">备注与特殊要求</span>
         <el-input

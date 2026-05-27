@@ -6,7 +6,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { ElMessage } from 'element-plus'
 
-import { api, type AIModelId, type Profile, type Timeline, type TimelineConfig } from '@/api/client'
+import { api, type AIModelId, type Profile, type TimelineConfig } from '@/api/client'
 
 import {
 
@@ -44,8 +44,6 @@ const profile = ref<Profile | null>(null)
 
 const displayName = ref('')
 
-const timelines = ref<Timeline[]>([])
-
 const pageLoading = ref(false)
 
 const aiModel = ref<AIModelId>(DEFAULT_AI_MODEL)
@@ -57,37 +55,23 @@ const timelineConfig = ref<TimelineConfig>({ target_node_count: DEFAULT_TARGET_N
 
 const { jobRunning, progress, statusText, confirmAndGenerate } = useTimelineGenerate()
 
-
-
-function formatTime(t: string) {
-
-  return new Date(t).toLocaleString('zh-CN')
-
-}
-
-
-
 async function load() {
 
   pageLoading.value = true
 
   try {
 
-    const [ch, prof, tlRes] = await Promise.all([
+    const [ch, prof] = await Promise.all([
 
       api.getCharacter(charId),
 
       api.getProfile(charId),
-
-      api.listTimelines(charId).catch(() => ({ timelines: [] as Timeline[] })),
 
     ])
 
     profile.value = prof
 
     displayName.value = ch.display_name || prof.display_name
-
-    timelines.value = tlRes.timelines
 
     timelineConfig.value = {
 
@@ -103,21 +87,13 @@ async function load() {
 
     ElMessage.error(e instanceof Error ? e.message : '加载失败')
 
-    router.push('/history')
+    router.push('/characters')
 
   } finally {
 
     pageLoading.value = false
 
   }
-
-}
-
-
-
-function openTimeline(tl: Timeline) {
-
-  router.push({ path: `/timeline/${charId}`, query: { timeline: tl.id } })
 
 }
 
@@ -174,61 +150,11 @@ onMounted(load)
 
       <h2>{{ displayName || '继续生成' }}</h2>
 
-      <el-button @click="router.push('/history')">返回历史</el-button>
+      <el-button @click="router.push(`/characters/${charId}`)">返回时间轴列表</el-button>
 
     </div>
 
-
-
-    <section v-if="timelines.length" class="existing-timelines">
-
-      <h3>已有时间轴（{{ timelines.length }}）</h3>
-
-      <el-table :data="timelines" stripe @row-click="openTimeline">
-
-        <el-table-column label="名称" min-width="200" prop="title" />
-
-        <el-table-column label="节点数" width="90" align="center">
-
-          <template #default="{ row }">
-
-            {{ row.node_count ?? '—' }}
-
-          </template>
-
-        </el-table-column>
-
-        <el-table-column label="更新时间" width="180">
-
-          <template #default="{ row }">
-
-            {{ formatTime(row.updated_at) }}
-
-          </template>
-
-        </el-table-column>
-
-        <el-table-column label="操作" width="100" fixed="right">
-
-          <template #default="{ row }">
-
-            <el-button type="primary" link @click.stop="openTimeline(row)">查看</el-button>
-
-          </template>
-
-        </el-table-column>
-
-      </el-table>
-
-    </section>
-
-
-
-    <el-divider v-if="timelines.length" />
-
-
-
-    <h3>{{ timelines.length ? '新建时间轴' : '生成时间轴' }}</h3>
+    <h3>新建时间轴</h3>
 
     <el-alert
 
@@ -322,7 +248,7 @@ onMounted(load)
 
     >
 
-      {{ timelines.length ? '生成新时间轴' : '生成人生时间轴' }}
+      生成时间轴
 
     </el-button>
 
@@ -352,14 +278,6 @@ onMounted(load)
 
 }
 
-.existing-timelines h3 {
-
-  margin: 0 0 12px;
-
-  font-size: 1rem;
-
-}
-
 h3 {
 
   margin: 0 0 12px;
@@ -372,12 +290,6 @@ h3 {
   margin: 0 0 8px;
   font-size: 0.85rem;
   color: #909399;
-}
-
-:deep(.el-table__row) {
-
-  cursor: pointer;
-
 }
 
 </style>

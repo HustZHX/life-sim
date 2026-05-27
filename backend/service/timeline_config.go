@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"life-sim/backend/ai"
@@ -32,8 +31,8 @@ func (s *CharacterService) RecommendTimelineConfigs(ctx context.Context, charact
 	if err != nil {
 		return nil, err
 	}
-	user := fmt.Sprintf("人物档案：\n%s\nbirth_year=%d, death_year=%d",
-		store.MustProfileJSON(profile), profile.BirthYear, profile.DeathYear)
+	profileJSON := store.ProfileJSONTimeline(profile)
+	user := fmt.Sprintf("人物档案：\n%s", profileJSON)
 
 	raw, err := s.ai.ChatJSONModel(ctx, apiModel, system, user)
 	if err != nil {
@@ -56,6 +55,10 @@ func (s *CharacterService) RecommendTimelineConfigs(ctx context.Context, charact
 		recs[i].StepYears = rangeCfg.StepYears
 		recs[i].StartYear, recs[i].EndYear = rangeCfg.StartYear, rangeCfg.EndYear
 	}
+
+	s.aiCache.putBundle(characterID, profile)
+	s.aiCache.putSession(characterID, ai.NewSession(characterID, store.ProfileHash(profile), system, user, raw))
+
 	return recs, nil
 }
 
@@ -64,13 +67,12 @@ func (s *CharacterService) recalculateLifespan(ctx context.Context, profile *mod
 	if err != nil {
 		return nil, err
 	}
-	lockedJSON, _ := json.Marshal(locked)
 	user := fmt.Sprintf(
 		"人物档案（含初始性格、信念、经历摘要等原形）：\n%s\n"+
 			"已发生人生节点（含锚点）：\n%s\n"+
-			"锚点节点：sequence=%d year=%d title=%s\nevents=%s\n原 death_year=%d",
-		store.MustProfileJSON(profile), string(lockedJSON),
-		edited.Sequence, edited.Year, edited.Title, edited.Events, profile.DeathYear,
+			"锚点节点：sequence=%d year=%d title=%s\nevents=%s",
+		store.ProfileJSONInner(profile), store.MarshalNodesLocked(locked),
+		edited.Sequence, edited.Year, edited.Title, edited.Events,
 	)
 
 	apiModel, err := s.resolveAPIModel(modelID)
@@ -126,9 +128,14 @@ func (s *CharacterService) PreviewLifespan(ctx context.Context, characterID, nod
 	if err != nil {
 		return nil, err
 	}
+	contextHint := store.EstimateContextBytes(
+		store.ProfileJSONInner(profile),
+		store.MarshalNodesLocked(locked),
+	)
 	return &model.LifespanPreviewResponse{
 		CurrentDeathYear: profile.DeathYear,
 		AnchorYear:       node.Year,
 		Preview:          *preview,
+		ContextTokenHint: contextHint,
 	}, nil
 }

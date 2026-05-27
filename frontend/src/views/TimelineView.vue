@@ -1,17 +1,21 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api, pollJob } from '@/api/client'
-import type { AIModelId, LifeNode, NodeFieldChange, Timeline, TimelineVersion } from '@/api/client'
-import { modelDisplayLabel } from '@/constants/models'
+import type { AIModelId, BranchNode, BranchOverviewEntry, LifeNode, Timeline } from '@/api/client'
+import { DEFAULT_AI_MODEL, modelDisplayLabel } from '@/constants/models'
 import TimelineAxis from '@/components/TimelineAxis.vue'
 import NodeEditor from '@/components/NodeEditor.vue'
-import ChangeDiffPanel from '@/components/ChangeDiffPanel.vue'
-import VersionHistory from '@/components/VersionHistory.vue'
+import BranchFlowchart from '@/components/BranchFlowchart.vue'
+import BranchOverview from '@/components/BranchOverview.vue'
 import ProfilePanel from '@/components/ProfilePanel.vue'
+import NarrativeDialog from '@/components/NarrativeDialog.vue'
+import ModelSelector from '@/components/ModelSelector.vue'
 import type { Profile } from '@/api/client'
 import { copyTextToClipboard, formatTimelineExport } from '@/utils/exportTimelineText'
+import { useNarrativeGenerate } from '@/composables/useNarrativeGenerate'
+import { DEFAULT_TARGET_NODE_COUNT } from '@/utils/timelineDensity'
 
 const route = useRoute()
 const router = useRouter()
@@ -23,14 +27,16 @@ const timelines = ref<Timeline[]>([])
 const currentTimeline = ref<Timeline | null>(null)
 const selectedTimelineId = ref('')
 const selectedNode = ref<LifeNode | null>(null)
-const versions = ref<TimelineVersion[]>([])
 const currentVersionId = ref('')
-const changes = ref<NodeFieldChange[]>([])
-const diffLoading = ref(false)
-const diffVersionId = ref('')
-const diffPanelRef = ref<HTMLElement | null>(null)
+const branchRoots = ref<BranchNode[]>([])
+const branchLoading = ref(false)
+const activatingBranchId = ref('')
 const pageLoading = ref(false)
 const showProfile = ref(false)
+const detailPanelOpen = ref(false)
+const viewMode = ref<'timeline' | 'overview'>('timeline')
+const overviewBranches = ref<BranchOverviewEntry[]>([])
+const overviewLoading = ref(false)
 
 const regenVisible = ref(false)
 const regenProgress = ref(0)
@@ -39,6 +45,118 @@ const regenStatus = ref('')
 const exportVisible = ref(false)
 const exportText = ref('')
 const exportCopying = ref(false)
+
+const narrative = useNarrativeGenerate()
+const {
+  visible: narrativeVisible,
+  title: narrativeTitle,
+  content: narrativeContent,
+  running: narrativeRunning,
+  progress: narrativeProgress,
+  statusText: narrativeStatusText,
+  close: closeNarrative,
+  regenerate: regenerateNarrative,
+  generateLightNovel,
+  openNodeNarrative,
+} = narrative
+const lightNovelPickerVisible = ref(false)
+const lightNovelModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+const lightNovelFrom = ref(0)
+const lightNovelTo = ref(0)
+
+const narrativeChangeVisible = ref(false)
+const narrativeChangeInstruction = ref('')
+const narrativeChangeModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+const narrativeChangeTargetNodes = ref(DEFAULT_TARGET_NODE_COUNT)
+
+const nodeSequenceOptions = computed(() =>
+  nodes.value.map((n) => ({
+    value: n.sequence,
+    label: `${n.sequence}. ${n.year} 年 · ${n.title}`,
+  }))
+)
+
+function openLightNovelPicker() {
+  if (!nodes.value.length || !currentVersionId.value) {
+    ElMessage.warning('暂无节点可生成轻小说')
+    return
+  }
+  const seqs = nodes.value.map((n) => n.sequence)
+  lightNovelFrom.value = Math.min(...seqs)
+  lightNovelTo.value = Math.max(...seqs)
+  lightNovelPickerVisible.value = true
+}
+
+async function confirmLightNovel() {
+  if (lightNovelFrom.value > lightNovelTo.value) {
+    ElMessage.warning('起始节点不能晚于结束节点')
+    return
+  }
+  lightNovelPickerVisible.value = false
+  await generateLightNovel({
+    type: 'light_novel',
+    characterId: charId,
+    versionId: currentVersionId.value,
+    fromSequence: lightNovelFrom.value,
+    toSequence: lightNovelTo.value,
+    model: lightNovelModel.value,
+  })
+}
+
+function onNarrativeDialogClose(visible: boolean) {
+  if (!visible) closeNarrative()
+}
+
+function openNarrativeChange() {
+  if (!selectedTimelineId.value || !nodes.value.length) {
+    ElMessage.warning('请先加载时间轴')
+    return
+  }
+  narrativeChangeInstruction.value = ''
+  narrativeChangeVisible.value = true
+}
+
+async function confirmNarrativeChange() {
+  const instruction = narrativeChangeInstruction.value.trim()
+  if (!instruction) {
+    ElMessage.warning('请填写叙述变更内容')
+    return
+  }
+  if (!selectedTimelineId.value) return
+
+  narrativeChangeVisible.value = false
+  regenVisible.value = true
+  regenProgress.value = 5
+  regenStatus.value = '正在提交叙述变更…'
+  try {
+    const job = await api.applyNarrativeChange(charId, {
+      timeline_id: selectedTimelineId.value,
+      instruction,
+      model: narrativeChangeModel.value,
+      target_node_count: narrativeChangeTargetNodes.value,
+    })
+    const done = await pollJob(job.id, (j) => {
+      regenProgress.value = Math.max(j.progress, 5)
+      if (j.status === 'running') {
+        const stage = j.stage_text ? `${j.stage_text} · ` : '处理中… '
+        regenStatus.value = `${stage}${j.progress}%（${modelDisplayLabel(j.model || narrativeChangeModel.value)}）`
+      }
+    })
+    if (done.status === 'failed') throw new Error(done.error || '叙述变更失败')
+    regenProgress.value = 100
+    regenStatus.value = '变更完成'
+    await load()
+    ElMessage.success('已根据叙述创建新分支并推演后续节点')
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '叙述变更失败')
+  } finally {
+    setTimeout(() => {
+      regenVisible.value = false
+      regenProgress.value = 0
+      regenStatus.value = ''
+    }, 1500)
+  }
+}
 
 function openExport() {
   if (!nodes.value.length) {
@@ -68,7 +186,7 @@ async function load() {
     const tlRes = await api.listTimelines(charId).catch(() => ({ timelines: [] as Timeline[] }))
     timelines.value = tlRes.timelines
     if (!tlRes.timelines.length) {
-      router.replace(`/continue/${charId}`)
+      router.replace(`/characters/${charId}`)
       return
     }
 
@@ -77,20 +195,25 @@ async function load() {
       timelineId = timelines.value[0].id
     }
 
-    const [tl, prof, vers] = await Promise.all([
+    const [tl, prof, branches] = await Promise.all([
       api.getTimeline(charId, { timelineId }),
       api.getProfile(charId).catch(() => null),
-      timelineId ? api.listVersions(charId, timelineId) : Promise.resolve({ versions: [] }),
+      timelineId
+        ? api.listBranches(charId, timelineId).catch(() => ({
+            timeline_id: timelineId,
+            active_version_id: '',
+            roots: [] as BranchNode[],
+          }))
+        : Promise.resolve({ timeline_id: '', active_version_id: '', roots: [] as BranchNode[] }),
     ])
     nodes.value = tl.nodes
     currentTimeline.value = tl.timeline
     selectedTimelineId.value = tl.timeline.id
     currentVersionId.value = tl.version.id
     profile.value = prof
-    versions.value = vers.versions
+    branchRoots.value = branches.roots
     selectedNode.value = null
-    changes.value = []
-    diffVersionId.value = ''
+    detailPanelOpen.value = false
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '加载失败')
   } finally {
@@ -115,6 +238,11 @@ watch(
 
 function onSelect(node: LifeNode) {
   selectedNode.value = node
+  detailPanelOpen.value = true
+}
+
+function closeDetailPanel() {
+  detailPanelOpen.value = false
 }
 
 async function onSave(payload: {
@@ -122,51 +250,40 @@ async function onSave(payload: {
   model: AIModelId
   patch: Record<string, string>
   target_node_count?: number
-  confirmed_death_year?: number
-  confirmed_death_cause?: string
 }) {
   if (!selectedNode.value) return
   regenVisible.value = true
   regenProgress.value = 5
-  regenStatus.value = '正在提交重算任务…'
-  changes.value = []
+  regenStatus.value =
+    payload.mode === 'full_cascade' ? '正在提交推演后续…' : '正在更新本节点…'
   try {
     const job = await api.patchNode(charId, selectedNode.value.id, {
       title: payload.patch.title,
       events: payload.patch.events,
       thoughts: payload.patch.thoughts,
       personality_snapshot: payload.patch.personality_snapshot,
-      mode: payload.mode as 'full_cascade' | 'inner_current' | 'inner_subsequent',
+      mode: payload.mode as 'full_cascade' | 'inner_current',
       model: payload.model,
       target_node_count: payload.target_node_count,
-      confirmed_death_year: payload.confirmed_death_year,
-      confirmed_death_cause: payload.confirmed_death_cause,
     })
     const done = await pollJob(job.id, (j) => {
       regenProgress.value = Math.max(j.progress, 5)
-      regenStatus.value =
-        j.status === 'running'
-          ? `重算中… ${j.progress}%（${modelDisplayLabel(j.model || payload.model)}）`
-          : regenStatus.value
-    })
-    if (done.status === 'failed') throw new Error(done.error || '重算失败')
-    regenProgress.value = 100
-    regenStatus.value = '重算完成'
-    if (done.result) {
-      try {
-        const diff = JSON.parse(done.result)
-        changes.value = diff.changes ?? []
-      } catch {
-        /* ignore */
+      if (j.status === 'running') {
+        const stage = j.stage_text ? `${j.stage_text} · ` : ''
+        const label = payload.mode === 'full_cascade' ? '推演后续' : '更新中'
+        regenStatus.value = `${stage}${label} ${j.progress}%（${modelDisplayLabel(j.model || payload.model)}）`
       }
-    }
+    })
+    if (done.status === 'failed') throw new Error(done.error || '任务失败')
+    regenProgress.value = 100
+    regenStatus.value = payload.mode === 'full_cascade' ? '推演后续完成' : '更新完成'
     await load()
     const updated = nodes.value.find((n: LifeNode) => n.sequence === selectedNode.value?.sequence)
     if (updated) selectedNode.value = updated
     const msg =
       payload.mode === 'full_cascade'
-        ? '已重算寿命并全新生成后续时间轴'
-        : '想法与性格已根据经历更新'
+        ? '已创建新分支并推演后续节点'
+        : '已创建新分支并更新本节点内心/性格'
     ElMessage.success(msg)
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '保存失败')
@@ -179,42 +296,57 @@ async function onSave(payload: {
   }
 }
 
-async function onDiff(v: TimelineVersion) {
-  diffLoading.value = true
-  diffVersionId.value = v.id
-  changes.value = []
+async function loadOverview() {
+  if (!selectedTimelineId.value) return
+  overviewLoading.value = true
   try {
-    const diff = await api.getVersionDiff(charId, v.id)
-    changes.value = diff.changes ?? []
-    await nextTick()
-    diffPanelRef.value?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-    if (!v.parent_version_id) {
-      ElMessage.info('这是首个版本，没有上一版可对比')
-    } else if (!changes.value.length) {
-      ElMessage.info('该版本与上一版相比无字段变更')
-    } else {
-      ElMessage.success(`已加载 ${changes.value.length} 处变更`)
-    }
+    const res = await api.getBranchOverview(charId, selectedTimelineId.value)
+    overviewBranches.value = res.branches
+    currentVersionId.value = res.active_version_id
   } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '获取 diff 失败')
+    ElMessage.error(e instanceof Error ? e.message : '加载总览失败')
   } finally {
-    diffLoading.value = false
+    overviewLoading.value = false
   }
 }
 
-async function onRollback(v: TimelineVersion) {
+async function enterOverview() {
+  if (!selectedTimelineId.value) {
+    ElMessage.warning('请先选择时间轴')
+    return
+  }
+  viewMode.value = 'overview'
+  detailPanelOpen.value = false
+  await loadOverview()
+}
+
+function exitOverview() {
+  viewMode.value = 'timeline'
+}
+
+async function onActivateBranch(versionId: string, options?: { returnToTimeline?: boolean }) {
+  if (!selectedTimelineId.value) return
+  activatingBranchId.value = versionId
   pageLoading.value = true
   try {
-    await api.rollback(charId, v.id)
+    await api.activateBranch(charId, selectedTimelineId.value, versionId)
     await load()
-    changes.value = []
-    diffVersionId.value = ''
-    ElMessage.success('已回溯到选定版本')
+    if (options?.returnToTimeline !== false) {
+      viewMode.value = 'timeline'
+    } else if (viewMode.value === 'overview') {
+      await loadOverview()
+    }
+    ElMessage.success('已切换分支')
   } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '回溯失败')
+    ElMessage.error(e instanceof Error ? e.message : '切换分支失败')
   } finally {
+    activatingBranchId.value = ''
     pageLoading.value = false
   }
+}
+
+async function onOverviewActivate(versionId: string) {
+  await onActivateBranch(versionId, { returnToTimeline: true })
 }
 
 onMounted(load)
@@ -247,9 +379,23 @@ onMounted(load)
             :value="tl.id"
           />
         </el-select>
+        <el-button @click="router.push(`/characters/${charId}`)">时间轴列表</el-button>
         <el-button @click="router.push(`/continue/${charId}`)">新建时间轴</el-button>
+        <el-button
+          :type="viewMode === 'overview' ? 'primary' : 'default'"
+          :disabled="!selectedTimelineId || pageLoading"
+          @click="viewMode === 'overview' ? exitOverview() : enterOverview()"
+        >
+          {{ viewMode === 'overview' ? '返回时间轴' : '总览视图' }}
+        </el-button>
         <el-button :disabled="!nodes.length || pageLoading" @click="openExport">导出文字</el-button>
-        <el-button @click="router.push('/history')">生成历史</el-button>
+        <el-button :disabled="!nodes.length || pageLoading" @click="openNarrativeChange">
+          叙述变更
+        </el-button>
+        <el-button :disabled="!nodes.length || pageLoading" @click="openLightNovelPicker">
+          生成轻小说
+        </el-button>
+        <el-button @click="router.push('/characters')">人物列表</el-button>
         <el-button @click="showProfile = !showProfile">
           {{ showProfile ? '隐藏' : '查看' }}档案
         </el-button>
@@ -262,20 +408,34 @@ onMounted(load)
       </div>
     </el-collapse-transition>
 
-    <div class="timeline-layout">
+    <div v-if="viewMode === 'overview'" class="page-card overview-wrap">
+      <BranchOverview
+        :branches="overviewBranches"
+        :loading="overviewLoading || pageLoading"
+        :activating-id="activatingBranchId"
+        @activate="onOverviewActivate"
+        @back="exitOverview"
+      />
+    </div>
+
+    <div v-else class="timeline-layout" :class="{ 'detail-collapsed': !detailPanelOpen }">
       <section class="col-timeline">
         <div v-loading="pageLoading" class="page-card timeline-scroll">
           <TimelineAxis
             :nodes="nodes"
             :selected-id="selectedNode?.id"
             :profile="profile"
+            :reading-focus="!detailPanelOpen"
             @select="onSelect"
           />
         </div>
       </section>
 
-      <aside class="col-dock col-dock-editor">
+      <aside v-show="detailPanelOpen" class="col-dock col-dock-editor">
         <div class="dock-panel page-card">
+          <div class="dock-panel-head">
+            <el-button text type="primary" @click="closeDetailPanel">← 收起详情</el-button>
+          </div>
           <NodeEditor
             :character-id="charId"
             :node="selectedNode"
@@ -285,28 +445,105 @@ onMounted(load)
             :regen-progress="regenProgress"
             :regen-status="regenStatus"
             @save="onSave"
+            @narrative="(kind, model) => selectedNode && openNodeNarrative(charId, selectedNode, kind, model)"
           />
         </div>
       </aside>
 
       <aside class="col-dock col-dock-side">
         <div class="dock-panel page-card">
-          <VersionHistory
-            :versions="versions"
-            :current-version-id="currentVersionId"
-            :loading="pageLoading"
-            :diff-loading="diffLoading"
-            :diff-version-id="diffVersionId"
-            @diff="onDiff"
-            @rollback="onRollback"
+          <BranchFlowchart
+            :roots="branchRoots"
+            :active-version-id="currentVersionId"
+            :loading="branchLoading || pageLoading"
+            :activating-id="activatingBranchId"
+            @activate="onActivateBranch"
           />
-          <el-divider />
-          <div ref="diffPanelRef">
-            <ChangeDiffPanel :changes="changes" :loading="diffLoading" />
-          </div>
         </div>
       </aside>
     </div>
+
+    <el-dialog
+      v-model="narrativeChangeVisible"
+      title="叙述变更"
+      width="min(560px, 92vw)"
+      destroy-on-close
+    >
+      <p class="export-hint">
+        用一句话描述希望如何变更时间轴，AI 会自动定位相关节点、修改或插入，并重算后续人生。无需手动选中节点。
+      </p>
+      <el-form label-position="top">
+        <el-form-item label="变更叙述" required>
+          <el-input
+            v-model="narrativeChangeInstruction"
+            type="textarea"
+            :rows="4"
+            placeholder="例如：诸葛亮病逝于白帝城托孤后一天"
+            maxlength="500"
+            show-word-limit
+          />
+        </el-form-item>
+        <el-form-item label="后续节点规模">
+          <el-input-number v-model="narrativeChangeTargetNodes" :min="5" :max="50" />
+        </el-form-item>
+        <ModelSelector v-model="narrativeChangeModel" />
+      </el-form>
+      <template #footer>
+        <el-button @click="narrativeChangeVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="regenVisible" @click="confirmNarrativeChange">
+          应用并重算后续
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="lightNovelPickerVisible"
+      title="生成轻小说"
+      width="min(520px, 92vw)"
+      destroy-on-close
+    >
+      <p class="export-hint">选择人生节点区间，AI 将以第一人称撰写连贯的轻小说章节（超过 5 个节点会自动分章）。</p>
+      <el-form label-position="top">
+        <el-form-item label="起始节点">
+          <el-select v-model="lightNovelFrom" style="width: 100%">
+            <el-option
+              v-for="opt in nodeSequenceOptions"
+              :key="'from-' + opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="结束节点">
+          <el-select v-model="lightNovelTo" style="width: 100%">
+            <el-option
+              v-for="opt in nodeSequenceOptions"
+              :key="'to-' + opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+        </el-form-item>
+        <ModelSelector v-model="lightNovelModel" />
+      </el-form>
+      <template #footer>
+        <el-button @click="lightNovelPickerVisible = false">取消</el-button>
+        <el-button type="primary" :loading="narrativeRunning" @click="confirmLightNovel">
+          开始生成
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <NarrativeDialog
+      :model-value="narrativeVisible"
+      :title="narrativeTitle"
+      :content="narrativeContent"
+      :loading="narrativeRunning"
+      :progress="narrativeProgress"
+      :status-text="narrativeStatusText"
+      @update:model-value="onNarrativeDialogClose"
+      @regenerate="regenerateNarrative"
+    />
 
     <el-dialog
       v-model="exportVisible"
@@ -331,6 +568,10 @@ onMounted(load)
   padding-bottom: 24px;
   max-width: 1500px;
   margin: 0 auto;
+}
+.overview-wrap {
+  padding: 20px;
+  min-height: 480px;
 }
 .toolbar {
   display: flex;
@@ -411,10 +652,34 @@ onMounted(load)
   grid-template-columns: minmax(280px, 1fr) 400px 320px;
   gap: 16px;
   align-items: stretch;
+  transition: grid-template-columns 0.25s ease;
+}
+
+.timeline-layout.detail-collapsed {
+  grid-template-columns: minmax(0, 1fr) 300px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.timeline-layout.detail-collapsed .col-timeline .timeline-scroll {
+  padding: 20px 28px 28px;
 }
 
 .col-timeline {
   min-width: 0;
+}
+
+.dock-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin: -4px 0 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #ebeef5;
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 2;
 }
 
 .col-dock {
@@ -436,6 +701,10 @@ onMounted(load)
   .timeline-layout {
     grid-template-columns: minmax(0, 1fr) 360px;
   }
+  .timeline-layout.detail-collapsed {
+    grid-template-columns: minmax(0, 1fr) 280px;
+    max-width: none;
+  }
   .col-dock-side {
     grid-column: 1 / -1;
   }
@@ -445,8 +714,16 @@ onMounted(load)
 }
 
 @media (max-width: 900px) {
-  .timeline-layout {
+  .timeline-layout,
+  .timeline-layout.detail-collapsed {
     grid-template-columns: 1fr;
+    max-width: none;
+  }
+  .col-dock-editor {
+    order: 2;
+  }
+  .col-dock-side {
+    order: 3;
   }
   .col-dock .dock-panel {
     position: static;

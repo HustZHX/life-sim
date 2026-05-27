@@ -5,7 +5,7 @@
   "birth_year": 701,
   "death_year": 762,
   "era": "盛唐",
-  "era_background": "时代背景概述",
+  "era_background": "时代背景概述（含影响该人物阶层与地区的大事脉络）",
   "personality_initial": "初始性格概括",
   "beliefs_motto": "信仰与格言",
   "experiences": "主要经历概述",
