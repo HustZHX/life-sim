@@ -12,11 +12,12 @@ import (
 )
 
 type CharacterHandler struct {
-	svc *service.CharacterService
+	svc  *service.CharacterService
+	narr *service.NarrativeService
 }
 
-func NewCharacterHandler(svc *service.CharacterService) *CharacterHandler {
-	return &CharacterHandler{svc: svc}
+func NewCharacterHandler(svc *service.CharacterService, narr *service.NarrativeService) *CharacterHandler {
+	return &CharacterHandler{svc: svc, narr: narr}
 }
 
 func (h *CharacterHandler) ListHistory(c *gin.Context) {
@@ -320,4 +321,72 @@ func (h *CharacterHandler) ListModels(c *gin.Context) {
 
 func (h *CharacterHandler) Health(c *gin.Context) {
 	OK(c, gin.H{"status": "ok"})
+}
+
+func (h *CharacterHandler) GetNarrative(c *gin.Context) {
+	charID := c.Param("id")
+	q := model.NarrativeArtifactQuery{
+		VersionID:    c.Query("version_id"),
+		Kind:         c.Query("kind"),
+		NodeID:       c.Query("node_id"),
+		FromSequence: queryInt(c, "from_sequence"),
+		ToSequence:   queryInt(c, "to_sequence"),
+	}
+	if q.VersionID == "" || q.Kind == "" {
+		Fail(c, http.StatusBadRequest, 400, "缺少 version_id 或 kind")
+		return
+	}
+	artifact, err := h.narr.GetArtifact(charID, q)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			Fail(c, http.StatusNotFound, 404, "暂无缓存")
+			return
+		}
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, artifact)
+}
+
+func queryInt(c *gin.Context, key string) int {
+	if v := c.Query(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+func (h *CharacterHandler) GenerateLightNovel(c *gin.Context) {
+	charID := c.Param("id")
+	var req model.LightNovelRequest
+	_ = c.ShouldBindJSON(&req)
+	job, cached, err := h.narr.StartLightNovelJob(c.Request.Context(), charID, req)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	if cached != nil {
+		OK(c, gin.H{"artifact": cached, "cached": true})
+		return
+	}
+	OK(c, job)
+}
+
+func (h *CharacterHandler) GenerateNodeNarrative(c *gin.Context) {
+	charID := c.Param("id")
+	nodeID := c.Param("nodeId")
+	kind := c.Param("kind")
+	var req model.NodeNarrativeRequest
+	_ = c.ShouldBindJSON(&req)
+	job, cached, err := h.narr.StartNodeNarrativeJob(c.Request.Context(), charID, nodeID, kind, req)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	if cached != nil {
+		OK(c, gin.H{"artifact": cached, "cached": true})
+		return
+	}
+	OK(c, job)
 }

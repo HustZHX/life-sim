@@ -56,7 +56,8 @@ func main() {
 
 	aiClient := ai.NewClient(&cfg.DeepSeek, promptDir)
 	charSvc := service.NewCharacterService(st, aiClient, cfg)
-	charHandler := handler.NewCharacterHandler(charSvc)
+	narrSvc := service.NewNarrativeService(st, aiClient)
+	charHandler := handler.NewCharacterHandler(charSvc, narrSvc)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -95,6 +96,9 @@ func main() {
 		v1.GET("/characters/:id/versions", charHandler.ListVersions)
 		v1.GET("/characters/:id/versions/:vid/diff", charHandler.GetVersionDiff)
 		v1.POST("/characters/:id/versions/:vid/rollback", charHandler.Rollback)
+		v1.GET("/characters/:id/narratives", charHandler.GetNarrative)
+		v1.POST("/characters/:id/narratives/light-novel", charHandler.GenerateLightNovel)
+		v1.POST("/characters/:id/nodes/:nodeId/narratives/:kind", charHandler.GenerateNodeNarrative)
 		v1.GET("/jobs/:jobId", charHandler.GetJob)
 	}
 

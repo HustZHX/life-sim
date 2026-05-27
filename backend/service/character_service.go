@@ -20,6 +20,7 @@ type CharacterService struct {
 	ai         *ai.Client
 	stepYears  int
 	pending    map[string][]model.ResolveCandidate
+	aiCache    *aiContextCache
 }
 
 func NewCharacterService(st *store.Store, aiClient *ai.Client, cfg *config.Config) *CharacterService {
@@ -28,6 +29,7 @@ func NewCharacterService(st *store.Store, aiClient *ai.Client, cfg *config.Confi
 		ai:        aiClient,
 		stepYears: cfg.TimelineStepYears,
 		pending:   make(map[string][]model.ResolveCandidate),
+		aiCache:   newAIContextCache(),
 	}
 }
 
@@ -175,6 +177,7 @@ func (s *CharacterService) GenerateProfile(ctx context.Context, characterID stri
 	if err := s.store.SaveProfile(profile); err != nil {
 		return nil, err
 	}
+	s.aiCache.invalidate(characterID)
 	ch.Status = model.StatusProfileReady
 	_ = s.store.UpdateCharacter(ch)
 	return profile, nil
@@ -188,6 +191,7 @@ func (s *CharacterService) UpdateProfile(characterID string, incoming *model.Pro
 	if err := s.store.SaveProfile(incoming); err != nil {
 		return nil, err
 	}
+	s.aiCache.invalidate(characterID)
 	if incoming.DisplayName != "" {
 		ch, err := s.store.GetCharacter(characterID)
 		if err == nil {
@@ -215,7 +219,7 @@ func (s *CharacterService) RandomizeProfileField(ctx context.Context, characterI
 	if err != nil {
 		return nil, err
 	}
-	user := fmt.Sprintf("需重新生成的字段：%s\n当前完整档案：\n%s", req.Field, store.MustProfileJSON(profile))
+	user := fmt.Sprintf("需重新生成的字段：%s\n当前完整档案：\n%s", req.Field, store.ProfileJSONFull(profile))
 	raw, err := s.ai.ChatJSONModel(ctx, apiModel, system, user)
 	if err != nil {
 		return nil, err
@@ -230,6 +234,7 @@ func (s *CharacterService) RandomizeProfileField(ctx context.Context, characterI
 	if err := s.store.SaveProfile(profile); err != nil {
 		return nil, err
 	}
+	s.aiCache.invalidate(characterID)
 	if req.Field == "display_name" && profile.DisplayName != "" {
 		ch, _ := s.store.GetCharacter(characterID)
 		if ch != nil {
@@ -365,12 +370,14 @@ func (s *CharacterService) StartTimelineJob(ctx context.Context, characterID str
 	}
 
 	cfg := timelineJobConfig{
-		StepYears:       rangeCfg.StepYears,
-		TargetNodeCount: rangeCfg.TargetNodeCount,
-		StartYear:       rangeCfg.StartYear,
-		EndYear:         rangeCfg.EndYear,
-		Title:           title,
-		Instructions:    req.Instructions,
+		StepYears:        rangeCfg.StepYears,
+		TargetNodeCount:  rangeCfg.TargetNodeCount,
+		StartYear:        rangeCfg.StartYear,
+		EndYear:          rangeCfg.EndYear,
+		Title:            title,
+		Instructions:     req.Instructions,
+		CharacterMode:    ch.Mode,
+		NarrativeDensity: model.NormalizeNarrativeDensity(req.NarrativeDensity),
 	}
 	go s.runTimelineGenerate(context.Background(), job.ID, characterID, timelineID, profile, modelID, cfg)
 
@@ -388,12 +395,14 @@ func defaultTimelineTitle(custom string, startYear, endYear, targetNodes int) st
 }
 
 type timelineJobConfig struct {
-	StepYears       int
-	TargetNodeCount int
-	StartYear       int
-	EndYear         int
-	Title           string
-	Instructions    string
+	StepYears        int
+	TargetNodeCount  int
+	StartYear        int
+	EndYear          int
+	Title            string
+	Instructions     string
+	CharacterMode    string
+	NarrativeDensity string
 }
 
 func (s *CharacterService) runTimelineGenerate(ctx context.Context, jobID, characterID, timelineID string, profile *model.Profile, modelID string, cfg timelineJobConfig) {
@@ -405,23 +414,11 @@ func (s *CharacterService) runTimelineGenerate(ctx context.Context, jobID, chara
 	job, _ := s.store.GetJob(jobID)
 	job.Status = model.JobRunning
 	job.Progress = 10
+	job.StageText = "正在准备生成任务…"
 	_ = s.store.UpdateJob(job)
 
-	system, err := s.ai.LoadPrompt("generate_timeline.txt")
-	if err != nil {
-		s.failJob(job, err.Error())
-		return
-	}
-
-	user := fmt.Sprintf("目标约 %d 个节点，生成区间 start_year=%d, end_year=%d（跨度 %d 年），参考间隔约 %d 年（非强制，以关键事件为准）\n人物档案：\n%s\nbirth_year=%d, death_year=%d",
-		cfg.TargetNodeCount, cfg.StartYear, cfg.EndYear, span, cfg.StepYears,
-		store.MustProfileJSON(profile), profile.BirthYear, profile.DeathYear)
-	if cfg.Instructions != "" {
-		user += fmt.Sprintf("\n\n用户特殊要求/备注（须优先满足）：\n%s", cfg.Instructions)
-	}
-
-	job.Progress = 25
-	_ = s.store.UpdateJob(job)
+	profileJSON := s.aiCache.getProfileTimelineJSON(characterID, profile)
+	profileHash := store.ProfileHash(profile)
 
 	apiModel, err := s.resolveAPIModel(modelID)
 	if err != nil {
@@ -431,23 +428,28 @@ func (s *CharacterService) runTimelineGenerate(ctx context.Context, jobID, chara
 	job.Model = modelID
 	_ = s.store.UpdateJob(job)
 
-	done := make(chan struct{})
-	go tickJobProgress(s.store, jobID, 28, 88, done)
-
-	raw, err := s.ai.ChatJSONModel(ctx, apiModel, system, user)
-	close(done)
-	if err != nil {
-		log.Printf("[timeline] AI 调用失败: %v", err)
-		s.failJob(job, err.Error())
-		return
-	}
-
 	versionID := uuid.New().String()
-	nodes, err := store.ParseTimelineNodes(raw, characterID, versionID, profile.DisplayName)
-	if err != nil {
-		s.failJob(job, err.Error())
-		return
+	var allNodes []model.LifeNode
+	var genErr error
+
+	if cfg.NarrativeDensity == model.NarrativeRich {
+		setJobStage(s.store, jobID, 12, "细腻模式：先规划骨架，再叙事扩写…")
+		allNodes, genErr = s.generateRichTimelineNodes(ctx, jobID, characterID, cfg.CharacterMode, profile, profileJSON, apiModel, cfg, versionID)
+		if genErr != nil {
+			log.Printf("[timeline] 细腻模式生成失败: %v", genErr)
+			s.failJob(job, genErr.Error())
+			return
+		}
+	} else {
+		allNodes, genErr = s.generateStandardTimelineNodes(ctx, jobID, characterID, profile, profileJSON, profileHash, apiModel, cfg, versionID)
+		if genErr != nil {
+			log.Printf("[timeline] 标准模式生成失败: %v", genErr)
+			s.failJob(job, genErr.Error())
+			return
+		}
 	}
+
+	setJobStage(s.store, jobID, 90, "正在保存版本…")
 
 	version := &model.TimelineVersion{
 		ID:              versionID,
@@ -461,7 +463,7 @@ func (s *CharacterService) runTimelineGenerate(ctx context.Context, jobID, chara
 		s.failJob(job, err.Error())
 		return
 	}
-	if err := s.store.SaveNodes(nodes); err != nil {
+	if err := s.store.SaveNodes(allNodes); err != nil {
 		s.failJob(job, err.Error())
 		return
 	}
@@ -480,9 +482,11 @@ func (s *CharacterService) runTimelineGenerate(ctx context.Context, jobID, chara
 	result, _ := json.Marshal(map[string]string{"timeline_id": timelineID, "version_id": versionID})
 	job.Status = model.JobCompleted
 	job.Progress = 100
+	job.StageText = "生成完成"
 	job.Result = string(result)
 	_ = s.store.UpdateJob(job)
-	log.Printf("[timeline] 完成 character=%s nodes=%d", characterID, len(nodes))
+	log.Printf("[timeline] 完成 character=%s nodes=%d mode=%s density=%s",
+		characterID, len(allNodes), cfg.CharacterMode, cfg.NarrativeDensity)
 }
 
 func (s *CharacterService) failJob(job *model.Job, msg string) {
@@ -641,7 +645,7 @@ func (s *CharacterService) runInnerCurrent(ctx context.Context, jobID, character
 		s.failJob(job, err.Error())
 		return
 	}
-	system, err := s.ai.LoadPrompt("regenerate_inner_current.txt")
+	system, err := s.ai.LoadPrompt(innerCurrentPromptName(ch.Mode))
 	if err != nil {
 		s.failJob(job, err.Error())
 		return
@@ -657,14 +661,13 @@ func (s *CharacterService) runInnerCurrent(ctx context.Context, jobID, character
 			"前置人生节点（sequence<%d，含各阶段经历/想法/性格快照）：\n%s\n"+
 			"本节点原内心/性格（trait_changes 的 before 参考）：\nthoughts=%s\npersonality_snapshot=%s\n"+
 			"本节点（新经历，勿改 events）：sequence=%d year=%d title=%s\nevents=%s",
-		store.MustProfileJSON(profile),
-		edited.Sequence, store.MarshalNodesBeforeSequence(oldNodes, edited.Sequence),
+		store.ProfileJSONInner(profile),
+		edited.Sequence, store.MarshalNodesLiteBeforeSequence(oldNodes, edited.Sequence),
 		oldThoughts, oldPersonality,
 		edited.Sequence, edited.Year, edited.Title, edited.Events,
 	)
 
-	job.Progress = 30
-	_ = s.store.UpdateJob(job)
+	setJobStage(s.store, jobID, 30, "正在调用 AI 重算本节点内心…")
 	done := make(chan struct{})
 	go tickJobProgress(s.store, jobID, 32, 85, done)
 
@@ -734,22 +737,20 @@ func (s *CharacterService) runInnerSubsequent(ctx context.Context, jobID, charac
 		return
 	}
 
-	system, err := s.ai.LoadPrompt("regenerate_inner_subsequent.txt")
+	system, err := s.ai.LoadPrompt(innerSubsequentPromptName(ch.Mode))
 	if err != nil {
 		s.failJob(job, err.Error())
 		return
 	}
-	tailJSON, _ := json.Marshal(tail)
-	lockedJSON, _ := json.Marshal(locked)
 	user := fmt.Sprintf(
 		"人物档案（含初始性格、信念、经历摘要等原形）：\n%s\n"+
 			"已发生人生节点（含修改后的锚点，sequence<=%d）：\n%s\n"+
 			"后续节点（保留 title/events/year，仅重算内心与性格）：\n%s",
-		store.MustProfileJSON(profile), edited.Sequence, string(lockedJSON), string(tailJSON),
+		store.ProfileJSONInner(profile), edited.Sequence,
+		store.MarshalNodesLocked(locked), store.MarshalNodesTailInput(tail),
 	)
 
-	job.Progress = 30
-	_ = s.store.UpdateJob(job)
+	setJobStage(s.store, jobID, 30, "正在调用 AI 重算后续节点内心…")
 	done := make(chan struct{})
 	go tickJobProgress(s.store, jobID, 32, 88, done)
 
@@ -831,6 +832,7 @@ func (s *CharacterService) finishRegenerateJob(job *model.Job, ch *model.Charact
 	_ = s.store.UpdateTimelineCurrentVersion(timelineID, newVersionID)
 	job.Status = model.JobCompleted
 	job.Progress = 100
+	job.StageText = "完成"
 	job.Result = string(diffJSON)
 	_ = s.store.UpdateJob(job)
 }
@@ -858,10 +860,14 @@ func (s *CharacterService) runRegenerate(ctx context.Context, jobID, characterID
 			s.failJob(job, "确认卒年须大于锚点年份")
 			return
 		}
+		reasoning := req.LifespanReasoning
+		if reasoning == "" {
+			reasoning = "用户已在预览步骤确认"
+		}
 		life = &model.LifespanRecalcResult{
 			DeathYear:  req.ConfirmedDeathYear,
 			DeathCause: req.ConfirmedDeathCause,
-			Reasoning:  "用户已在预览步骤确认",
+			Reasoning:  reasoning,
 		}
 	} else {
 		var errLife error
@@ -885,13 +891,13 @@ func (s *CharacterService) runRegenerate(ctx context.Context, jobID, characterID
 	stepYears, targetNodes := store.ResolveRegenerateTailRange(edited.Year, profile.DeathYear, req.TargetNodeCount)
 
 	// 2. 完全重新生成后续时间轴
-	system, err := s.ai.LoadPrompt("regenerate_full_tail.txt")
+	system, err := s.ai.LoadPrompt(fullTailPromptName(ch.Mode))
 	if err != nil {
 		s.failJob(job, err.Error())
 		return
 	}
 
-	lockedJSON, _ := json.Marshal(locked)
+	lockedJSON := store.MarshalNodesLocked(locked)
 	remainingSpan := profile.DeathYear - edited.Year
 	if remainingSpan < 0 {
 		remainingSpan = 0
@@ -903,13 +909,12 @@ func (s *CharacterService) runRegenerate(ctx context.Context, jobID, characterID
 			"锚点节点（编辑后）：sequence=%d year=%d age=%d title=%s\nevents=%s\n"+
 			"寿命重算说明：%s",
 		targetNodes, edited.Year, profile.DeathYear, remainingSpan, stepYears,
-		store.MustProfileJSON(profile), string(lockedJSON),
+		store.ProfileJSONTimeline(profile), lockedJSON,
 		edited.Sequence, edited.Year, edited.Age, edited.Title, edited.Events,
 		life.Reasoning,
 	)
 
-	job.Progress = 40
-	_ = s.store.UpdateJob(job)
+	setJobStage(s.store, jobID, 40, "正在调用 AI 生成后续时间轴…")
 
 	apiModel, err := s.resolveAPIModel(modelID)
 	if err != nil {

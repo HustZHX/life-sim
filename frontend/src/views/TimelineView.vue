@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api, pollJob } from '@/api/client'
 import type { AIModelId, LifeNode, NodeFieldChange, Timeline, TimelineVersion } from '@/api/client'
-import { modelDisplayLabel } from '@/constants/models'
+import { DEFAULT_AI_MODEL, modelDisplayLabel } from '@/constants/models'
 import TimelineAxis from '@/components/TimelineAxis.vue'
 import NodeEditor from '@/components/NodeEditor.vue'
 import ChangeDiffPanel from '@/components/ChangeDiffPanel.vue'
 import VersionHistory from '@/components/VersionHistory.vue'
 import ProfilePanel from '@/components/ProfilePanel.vue'
+import NarrativeDialog from '@/components/NarrativeDialog.vue'
+import ModelSelector from '@/components/ModelSelector.vue'
 import type { Profile } from '@/api/client'
 import { copyTextToClipboard, formatTimelineExport } from '@/utils/exportTimelineText'
+import { useNarrativeGenerate } from '@/composables/useNarrativeGenerate'
 
 const route = useRoute()
 const router = useRouter()
@@ -39,6 +42,62 @@ const regenStatus = ref('')
 const exportVisible = ref(false)
 const exportText = ref('')
 const exportCopying = ref(false)
+
+const narrative = useNarrativeGenerate()
+const {
+  visible: narrativeVisible,
+  title: narrativeTitle,
+  content: narrativeContent,
+  running: narrativeRunning,
+  progress: narrativeProgress,
+  statusText: narrativeStatusText,
+  close: closeNarrative,
+  regenerate: regenerateNarrative,
+  generateLightNovel,
+  openNodeNarrative,
+} = narrative
+const lightNovelPickerVisible = ref(false)
+const lightNovelModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+const lightNovelFrom = ref(0)
+const lightNovelTo = ref(0)
+
+const nodeSequenceOptions = computed(() =>
+  nodes.value.map((n) => ({
+    value: n.sequence,
+    label: `${n.sequence}. ${n.year} 年 · ${n.title}`,
+  }))
+)
+
+function openLightNovelPicker() {
+  if (!nodes.value.length || !currentVersionId.value) {
+    ElMessage.warning('暂无节点可生成轻小说')
+    return
+  }
+  const seqs = nodes.value.map((n) => n.sequence)
+  lightNovelFrom.value = Math.min(...seqs)
+  lightNovelTo.value = Math.max(...seqs)
+  lightNovelPickerVisible.value = true
+}
+
+async function confirmLightNovel() {
+  if (lightNovelFrom.value > lightNovelTo.value) {
+    ElMessage.warning('起始节点不能晚于结束节点')
+    return
+  }
+  lightNovelPickerVisible.value = false
+  await generateLightNovel({
+    type: 'light_novel',
+    characterId: charId,
+    versionId: currentVersionId.value,
+    fromSequence: lightNovelFrom.value,
+    toSequence: lightNovelTo.value,
+    model: lightNovelModel.value,
+  })
+}
+
+function onNarrativeDialogClose(visible: boolean) {
+  if (!visible) closeNarrative()
+}
 
 function openExport() {
   if (!nodes.value.length) {
@@ -124,6 +183,7 @@ async function onSave(payload: {
   target_node_count?: number
   confirmed_death_year?: number
   confirmed_death_cause?: string
+  lifespan_reasoning?: string
 }) {
   if (!selectedNode.value) return
   regenVisible.value = true
@@ -141,13 +201,14 @@ async function onSave(payload: {
       target_node_count: payload.target_node_count,
       confirmed_death_year: payload.confirmed_death_year,
       confirmed_death_cause: payload.confirmed_death_cause,
+      lifespan_reasoning: payload.lifespan_reasoning,
     })
     const done = await pollJob(job.id, (j) => {
       regenProgress.value = Math.max(j.progress, 5)
-      regenStatus.value =
-        j.status === 'running'
-          ? `重算中… ${j.progress}%（${modelDisplayLabel(j.model || payload.model)}）`
-          : regenStatus.value
+      if (j.status === 'running') {
+        const stage = j.stage_text ? `${j.stage_text} · ` : '重算中… '
+        regenStatus.value = `${stage}${j.progress}%（${modelDisplayLabel(j.model || payload.model)}）`
+      }
     })
     if (done.status === 'failed') throw new Error(done.error || '重算失败')
     regenProgress.value = 100
@@ -166,7 +227,9 @@ async function onSave(payload: {
     const msg =
       payload.mode === 'full_cascade'
         ? '已重算寿命并全新生成后续时间轴'
-        : '想法与性格已根据经历更新'
+        : payload.mode === 'inner_subsequent'
+          ? '已保留后续经历并重算内心与性格'
+          : '想法与性格已根据经历更新'
     ElMessage.success(msg)
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '保存失败')
@@ -249,6 +312,9 @@ onMounted(load)
         </el-select>
         <el-button @click="router.push(`/continue/${charId}`)">新建时间轴</el-button>
         <el-button :disabled="!nodes.length || pageLoading" @click="openExport">导出文字</el-button>
+        <el-button :disabled="!nodes.length || pageLoading" @click="openLightNovelPicker">
+          生成轻小说
+        </el-button>
         <el-button @click="router.push('/history')">生成历史</el-button>
         <el-button @click="showProfile = !showProfile">
           {{ showProfile ? '隐藏' : '查看' }}档案
@@ -285,6 +351,7 @@ onMounted(load)
             :regen-progress="regenProgress"
             :regen-status="regenStatus"
             @save="onSave"
+            @narrative="(kind, model) => selectedNode && openNodeNarrative(charId, selectedNode, kind, model)"
           />
         </div>
       </aside>
@@ -307,6 +374,55 @@ onMounted(load)
         </div>
       </aside>
     </div>
+
+    <el-dialog
+      v-model="lightNovelPickerVisible"
+      title="生成轻小说"
+      width="min(520px, 92vw)"
+      destroy-on-close
+    >
+      <p class="export-hint">选择人生节点区间，AI 将以第一人称撰写连贯的轻小说章节（超过 5 个节点会自动分章）。</p>
+      <el-form label-position="top">
+        <el-form-item label="起始节点">
+          <el-select v-model="lightNovelFrom" style="width: 100%">
+            <el-option
+              v-for="opt in nodeSequenceOptions"
+              :key="'from-' + opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="结束节点">
+          <el-select v-model="lightNovelTo" style="width: 100%">
+            <el-option
+              v-for="opt in nodeSequenceOptions"
+              :key="'to-' + opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+        </el-form-item>
+        <ModelSelector v-model="lightNovelModel" />
+      </el-form>
+      <template #footer>
+        <el-button @click="lightNovelPickerVisible = false">取消</el-button>
+        <el-button type="primary" :loading="narrativeRunning" @click="confirmLightNovel">
+          开始生成
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <NarrativeDialog
+      :model-value="narrativeVisible"
+      :title="narrativeTitle"
+      :content="narrativeContent"
+      :loading="narrativeRunning"
+      :progress="narrativeProgress"
+      :status-text="narrativeStatusText"
+      @update:model-value="onNarrativeDialogClose"
+      @regenerate="regenerateNarrative"
+    />
 
     <el-dialog
       v-model="exportVisible"

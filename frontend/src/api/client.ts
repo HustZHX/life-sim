@@ -134,6 +134,7 @@ export interface Job {
   type: string
   status: string
   progress: number
+  stage_text?: string
   model?: string
   result?: string
   error?: string
@@ -149,6 +150,8 @@ export interface AIModel {
   quality: string
 }
 
+export type NarrativeDensity = 'standard' | 'rich'
+
 export interface TimelineConfig {
   title?: string
   instructions?: string
@@ -157,6 +160,8 @@ export interface TimelineConfig {
   end_year: number
   /** 由前端/后端按跨度推算，供展示 */
   step_years?: number
+  /** standard=单次生成；rich=骨架+叙事扩写（默认） */
+  narrative_density?: NarrativeDensity
 }
 
 export interface TimelineRecommendation {
@@ -179,6 +184,7 @@ export interface PatchNodePayload {
   target_node_count?: number
   confirmed_death_year?: number
   confirmed_death_cause?: string
+  lifespan_reasoning?: string
 }
 
 export interface LifespanPreview {
@@ -192,6 +198,7 @@ export interface LifespanPreviewResponse {
   current_death_year: number
   anchor_year: number
   preview: LifespanPreview
+  context_token_hint?: number
 }
 
 export interface NodeFieldChange {
@@ -207,6 +214,39 @@ export interface VersionDiff {
   version_id: string
   parent_version_id?: string
   changes: NodeFieldChange[]
+}
+
+export type NarrativeKind = 'light_novel' | 'diary' | 'letter' | 'archive'
+
+export interface NarrativeArtifact {
+  id: string
+  character_id: string
+  version_id: string
+  node_id?: string
+  kind: NarrativeKind
+  from_sequence?: number
+  to_sequence?: number
+  content: string
+  model?: string
+  created_at?: string
+}
+
+export interface LightNovelRequest {
+  model?: AIModelId
+  version_id: string
+  from_sequence: number
+  to_sequence: number
+  force?: boolean
+}
+
+export interface NodeNarrativeRequest {
+  model?: AIModelId
+  force?: boolean
+}
+
+export interface NarrativeCachedResponse {
+  artifact: NarrativeArtifact
+  cached: true
 }
 
 async function unwrap<T>(p: Promise<{ data: ApiResponse<T> }>): Promise<T> {
@@ -304,6 +344,7 @@ export const api = {
         target_node_count: config?.target_node_count,
         start_year: config?.start_year,
         end_year: config?.end_year,
+        narrative_density: config?.narrative_density,
       })
     ),
 
@@ -354,6 +395,35 @@ export const api = {
 
   rollback: (charId: string, vid: string) =>
     unwrap<Character>(http.post(`/api/v1/characters/${charId}/versions/${vid}/rollback`)),
+
+  getNarrative: (
+    charId: string,
+    params: {
+      version_id: string
+      kind: NarrativeKind
+      node_id?: string
+      from_sequence?: number
+      to_sequence?: number
+    }
+  ) =>
+    unwrap<NarrativeArtifact>(
+      http.get(`/api/v1/characters/${charId}/narratives`, { params })
+    ),
+
+  generateLightNovel: (charId: string, body: LightNovelRequest) =>
+    unwrap<Job | NarrativeCachedResponse>(
+      http.post(`/api/v1/characters/${charId}/narratives/light-novel`, body)
+    ),
+
+  generateNodeNarrative: (
+    charId: string,
+    nodeId: string,
+    kind: Exclude<NarrativeKind, 'light_novel'>,
+    body?: NodeNarrativeRequest
+  ) =>
+    unwrap<Job | NarrativeCachedResponse>(
+      http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/narratives/${kind}`, body ?? {})
+    ),
 }
 
 export async function pollJob(

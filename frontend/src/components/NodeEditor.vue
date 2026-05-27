@@ -16,7 +16,8 @@ import HighlightedText from '@/components/HighlightedText.vue'
 import TimelineConfigPanel from '@/components/TimelineConfigPanel.vue'
 import NodeSceneMeta from '@/components/NodeSceneMeta.vue'
 import { DEFAULT_TARGET_NODE_COUNT } from '@/utils/timelineDensity'
-import { DEFAULT_AI_MODEL } from '@/constants/models'
+import { DEFAULT_AI_MODEL, DEFAULT_CASCADE_MODEL } from '@/constants/models'
+import type { NarrativeKind } from '@/api/client'
 import { fieldLabel } from '@/constants/fieldLabels'
 import JobProgress from '@/components/JobProgress.vue'
 
@@ -39,8 +40,10 @@ const emit = defineEmits<{
       target_node_count?: number
       confirmed_death_year?: number
       confirmed_death_cause?: string
+      lifespan_reasoning?: string
     },
   ]
+  narrative: [kind: Exclude<NarrativeKind, 'light_novel'>, model: AIModelId]
 }>()
 
 const form = ref({
@@ -50,6 +53,7 @@ const form = ref({
   personality_snapshot: '',
 })
 const model = ref<AIModelId>(DEFAULT_AI_MODEL)
+const cascadeModel = ref<AIModelId>(DEFAULT_CASCADE_MODEL)
 const regenConfig = ref<TimelineConfig>({
   target_node_count: DEFAULT_TARGET_NODE_COUNT,
   start_year: 0,
@@ -61,6 +65,7 @@ const lifespanPreview = ref<LifespanPreviewResponse | null>(null)
 const lifespanConfirmed = ref(false)
 const confirmedDeathYear = ref(0)
 const confirmedDeathCause = ref('')
+const confirmedLifespanReasoning = ref('')
 
 const entityContext = computed<EntityHighlightContext>(() =>
   entityContextFromNode(props.node, props.profile ?? null)
@@ -71,6 +76,7 @@ function resetLifespanFlow() {
   lifespanConfirmed.value = false
   confirmedDeathYear.value = 0
   confirmedDeathCause.value = ''
+  confirmedLifespanReasoning.value = ''
 }
 
 watch(
@@ -113,8 +119,16 @@ function buildPatch() {
   return { ...form.value }
 }
 
+function openNarrative(kind: Exclude<NarrativeKind, 'light_novel'>) {
+  emit('narrative', kind, model.value)
+}
+
 function syncCurrentInner() {
   emit('save', { mode: 'inner_current', model: model.value, patch: buildPatch() })
+}
+
+function syncSubsequentInner() {
+  emit('save', { mode: 'inner_subsequent', model: model.value, patch: buildPatch() })
 }
 
 async function previewLifespan() {
@@ -146,6 +160,7 @@ function confirmLifespan() {
   }
   confirmedDeathYear.value = p.death_year
   confirmedDeathCause.value = p.death_cause || ''
+  confirmedLifespanReasoning.value = p.reasoning || ''
   lifespanConfirmed.value = true
   regenConfig.value.end_year = p.death_year
 }
@@ -157,11 +172,12 @@ function regenerateAllSubsequent() {
   }
   emit('save', {
     mode: 'full_cascade',
-    model: model.value,
+    model: cascadeModel.value,
     patch: buildPatch(),
     target_node_count: regenConfig.value.target_node_count,
     confirmed_death_year: confirmedDeathYear.value,
     confirmed_death_cause: confirmedDeathCause.value,
+    lifespan_reasoning: confirmedLifespanReasoning.value,
   })
 }
 </script>
@@ -206,15 +222,28 @@ function regenerateAllSubsequent() {
 
       <ModelSelector v-model="model" />
 
+      <div class="narrative-box">
+        <div class="narrative-head">多视角叙事</div>
+        <p class="narrative-hint">按需生成，结果会缓存；可在弹窗中重新生成。</p>
+        <div class="narrative-actions">
+          <el-button plain @click="openNarrative('diary')">查看日记</el-button>
+          <el-button plain @click="openNarrative('letter')">查看书信</el-button>
+          <el-button plain @click="openNarrative('archive')">查看档案</el-button>
+        </div>
+      </div>
+
       <div class="actions">
         <el-button type="primary" :loading="loading" @click="syncCurrentInner">
           根据经历更新本节点想法/性格
+        </el-button>
+        <el-button type="primary" plain :loading="loading" @click="syncSubsequentInner">
+          保留后续经历，重算内心与性格
         </el-button>
       </div>
 
       <div class="cascade-box">
         <div class="cascade-head">完全重算后续（两步）</div>
-        <p class="cascade-hint">第一步根据新经历预览寿命；确认后再配置节点密度并生成。</p>
+        <p class="cascade-hint">第一步根据新经历预览寿命；确认后再配置节点密度并生成。默认使用 Pro 模型。</p>
 
         <el-button
           type="warning"
@@ -253,10 +282,11 @@ function regenerateAllSubsequent() {
         />
 
         <template v-if="lifespanConfirmed && profile">
+          <ModelSelector v-model="cascadeModel" />
           <TimelineConfigPanel
             v-model="regenConfig"
             :profile="profile"
-            :model="model"
+            :model="cascadeModel"
             :anchor-year="node.year"
             :override-end-year="confirmedDeathYear"
             density-only
@@ -269,7 +299,7 @@ function regenerateAllSubsequent() {
       </div>
 
       <el-alert
-        title="「更新本节点」只改当前节点的想法与性格。「完全重算」须先预览确认寿命，再按确认的剩余跨度生成后续节点。"
+        title="三种重算粒度：① 仅本节点内心 ② 保留后续经历只重算内心 ③ 完全重算须先预览确认寿命再生成后续节点。"
         type="info"
         :closable="false"
         show-icon
@@ -326,6 +356,29 @@ function regenerateAllSubsequent() {
   flex-direction: column;
   gap: 10px;
   margin-bottom: 16px;
+}
+.narrative-box {
+  margin: 12px 0 16px;
+  padding: 12px 14px;
+  border: 1px solid #d9ecff;
+  border-radius: 8px;
+  background: #f5faff;
+}
+.narrative-head {
+  font-weight: 600;
+  color: #409eff;
+  margin-bottom: 4px;
+}
+.narrative-hint {
+  margin: 0 0 10px;
+  font-size: 0.82rem;
+  color: #909399;
+  line-height: 1.45;
+}
+.narrative-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .cascade-box {
   margin: 16px 0;

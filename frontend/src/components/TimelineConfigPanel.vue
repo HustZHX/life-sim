@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { api, type Profile, type TimelineConfig, type TimelineRecommendation } from '@/api/client'
 import type { AIModelId } from '@/constants/models'
-import { DEFAULT_AI_MODEL } from '@/constants/models'
+import { DEFAULT_AI_MODEL, DEFAULT_NARRATIVE_DENSITY } from '@/constants/models'
 import {
   DEFAULT_TARGET_NODE_COUNT,
   MAX_TARGET_NODE_COUNT,
@@ -84,6 +84,7 @@ watch(
       config.value.end_year = effectiveDeathYear(p)
     }
     if (!config.value.target_node_count) config.value.target_node_count = DEFAULT_TARGET_NODE_COUNT
+    if (!config.value.narrative_density) config.value.narrative_density = DEFAULT_NARRATIVE_DENSITY
   },
   { immediate: true }
 )
@@ -109,6 +110,7 @@ async function fetchRecommendations() {
 function applyRecommendation(rec: TimelineRecommendation, index: number) {
   selectedRecIndex.value = index
   config.value = {
+    ...config.value,
     target_node_count: rec.target_node_count,
     start_year: rec.start_year,
     end_year: rec.end_year,
@@ -206,6 +208,16 @@ function toggleExpanded() {
     </p>
 
     <div class="custom-form">
+      <div class="form-row density-mode-row">
+        <span class="field-label">叙事密度</span>
+        <el-radio-group v-model="config.narrative_density" :disabled="disabled">
+          <el-radio value="rich">细腻（骨架 + 扩写，推荐）</el-radio>
+          <el-radio value="standard">标准（单次生成，更快）</el-radio>
+        </el-radio-group>
+        <p class="density-hint">
+          细腻模式在史实严谨前提下加厚 events/thoughts；Flash / Pro 均可选，Pro 文笔更细。
+        </p>
+      </div>
       <div class="form-row instructions-row">
         <span class="field-label">备注与特殊要求</span>
         <el-input
