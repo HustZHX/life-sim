@@ -249,6 +249,13 @@ export interface NarrativeCachedResponse {
   cached: true
 }
 
+export interface NarrativeChangeRequest {
+  timeline_id: string
+  instruction: string
+  model?: AIModelId
+  target_node_count?: number
+}
+
 async function unwrap<T>(p: Promise<{ data: ApiResponse<T> }>): Promise<T> {
   try {
     const { data } = await p
@@ -381,6 +388,15 @@ export const api = {
       http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/lifespan/preview`, body)
     ),
 
+  regenerateNodeEvents: (
+    charId: string,
+    nodeId: string,
+    body: { title: string; model: AIModelId }
+  ) =>
+    unwrap<{ events: string }>(
+      http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/regenerate-events`, body)
+    ),
+
   getJob: (jobId: string) => unwrap<Job>(http.get(`/api/v1/jobs/${jobId}`)),
 
   listVersions: (id: string, timelineId?: string) =>
@@ -414,6 +430,9 @@ export const api = {
     unwrap<Job | NarrativeCachedResponse>(
       http.post(`/api/v1/characters/${charId}/narratives/light-novel`, body)
     ),
+
+  applyNarrativeChange: (charId: string, body: NarrativeChangeRequest) =>
+    unwrap<Job>(http.post(`/api/v1/characters/${charId}/timeline/narrative-change`, body)),
 
   generateNodeNarrative: (
     charId: string,

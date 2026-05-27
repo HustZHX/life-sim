@@ -14,7 +14,7 @@ function pick(mode: 'famous' | 'random') {
     <h1>选择一种人生</h1>
     <p class="subtitle">由 DeepSeek AI 演绎人物档案与人生节点，按寿命自动适配约 20 个关键节点</p>
     <p class="history-link">
-      <router-link to="/history">查看生成历史 →</router-link>
+      <router-link to="/characters">查看人物列表 →</router-link>
     </p>
     <div class="cards">
       <el-card class="mode-card" shadow="hover" @click="pick('famous')">

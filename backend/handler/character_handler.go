@@ -239,6 +239,21 @@ func (h *CharacterHandler) PatchNode(c *gin.Context) {
 	OK(c, job)
 }
 
+func (h *CharacterHandler) ApplyNarrativeChange(c *gin.Context) {
+	charID := c.Param("id")
+	var req model.NarrativeChangeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+	job, err := h.svc.ApplyNarrativeChange(c.Request.Context(), charID, req)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	OK(c, job)
+}
+
 func (h *CharacterHandler) PreviewLifespan(c *gin.Context) {
 	charID := c.Param("id")
 	nodeID := c.Param("nodeId")
@@ -248,6 +263,22 @@ func (h *CharacterHandler) PreviewLifespan(c *gin.Context) {
 		return
 	}
 	resp, err := h.svc.PreviewLifespan(c.Request.Context(), charID, nodeID, req)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, resp)
+}
+
+func (h *CharacterHandler) RegenerateNodeEvents(c *gin.Context) {
+	charID := c.Param("id")
+	nodeID := c.Param("nodeId")
+	var req model.RegenerateNodeEventsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+	resp, err := h.svc.RegenerateNodeEvents(c.Request.Context(), charID, nodeID, req)
 	if err != nil {
 		Fail(c, http.StatusInternalServerError, 500, err.Error())
 		return

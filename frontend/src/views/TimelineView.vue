@@ -15,6 +15,7 @@ import ModelSelector from '@/components/ModelSelector.vue'
 import type { Profile } from '@/api/client'
 import { copyTextToClipboard, formatTimelineExport } from '@/utils/exportTimelineText'
 import { useNarrativeGenerate } from '@/composables/useNarrativeGenerate'
+import { DEFAULT_TARGET_NODE_COUNT } from '@/utils/timelineDensity'
 
 const route = useRoute()
 const router = useRouter()
@@ -34,6 +35,7 @@ const diffVersionId = ref('')
 const diffPanelRef = ref<HTMLElement | null>(null)
 const pageLoading = ref(false)
 const showProfile = ref(false)
+const detailPanelOpen = ref(false)
 
 const regenVisible = ref(false)
 const regenProgress = ref(0)
@@ -60,6 +62,11 @@ const lightNovelPickerVisible = ref(false)
 const lightNovelModel = ref<AIModelId>(DEFAULT_AI_MODEL)
 const lightNovelFrom = ref(0)
 const lightNovelTo = ref(0)
+
+const narrativeChangeVisible = ref(false)
+const narrativeChangeInstruction = ref('')
+const narrativeChangeModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+const narrativeChangeTargetNodes = ref(DEFAULT_TARGET_NODE_COUNT)
 
 const nodeSequenceOptions = computed(() =>
   nodes.value.map((n) => ({
@@ -99,6 +106,67 @@ function onNarrativeDialogClose(visible: boolean) {
   if (!visible) closeNarrative()
 }
 
+function openNarrativeChange() {
+  if (!selectedTimelineId.value || !nodes.value.length) {
+    ElMessage.warning('请先加载时间轴')
+    return
+  }
+  narrativeChangeInstruction.value = ''
+  narrativeChangeVisible.value = true
+}
+
+async function confirmNarrativeChange() {
+  const instruction = narrativeChangeInstruction.value.trim()
+  if (!instruction) {
+    ElMessage.warning('请填写叙述变更内容')
+    return
+  }
+  if (!selectedTimelineId.value) return
+
+  narrativeChangeVisible.value = false
+  regenVisible.value = true
+  regenProgress.value = 5
+  regenStatus.value = '正在提交叙述变更…'
+  changes.value = []
+
+  try {
+    const job = await api.applyNarrativeChange(charId, {
+      timeline_id: selectedTimelineId.value,
+      instruction,
+      model: narrativeChangeModel.value,
+      target_node_count: narrativeChangeTargetNodes.value,
+    })
+    const done = await pollJob(job.id, (j) => {
+      regenProgress.value = Math.max(j.progress, 5)
+      if (j.status === 'running') {
+        const stage = j.stage_text ? `${j.stage_text} · ` : '处理中… '
+        regenStatus.value = `${stage}${j.progress}%（${modelDisplayLabel(j.model || narrativeChangeModel.value)}）`
+      }
+    })
+    if (done.status === 'failed') throw new Error(done.error || '叙述变更失败')
+    regenProgress.value = 100
+    regenStatus.value = '变更完成'
+    if (done.result) {
+      try {
+        const diff = JSON.parse(done.result)
+        changes.value = diff.changes ?? []
+      } catch {
+        /* ignore */
+      }
+    }
+    await load()
+    ElMessage.success('已根据叙述变更时间轴并重算后续节点')
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '叙述变更失败')
+  } finally {
+    setTimeout(() => {
+      regenVisible.value = false
+      regenProgress.value = 0
+      regenStatus.value = ''
+    }, 1500)
+  }
+}
+
 function openExport() {
   if (!nodes.value.length) {
     ElMessage.warning('暂无节点可导出')
@@ -127,7 +195,7 @@ async function load() {
     const tlRes = await api.listTimelines(charId).catch(() => ({ timelines: [] as Timeline[] }))
     timelines.value = tlRes.timelines
     if (!tlRes.timelines.length) {
-      router.replace(`/continue/${charId}`)
+      router.replace(`/characters/${charId}`)
       return
     }
 
@@ -148,6 +216,7 @@ async function load() {
     profile.value = prof
     versions.value = vers.versions
     selectedNode.value = null
+    detailPanelOpen.value = false
     changes.value = []
     diffVersionId.value = ''
   } catch (e: unknown) {
@@ -174,6 +243,11 @@ watch(
 
 function onSelect(node: LifeNode) {
   selectedNode.value = node
+  detailPanelOpen.value = true
+}
+
+function closeDetailPanel() {
+  detailPanelOpen.value = false
 }
 
 async function onSave(payload: {
@@ -310,12 +384,16 @@ onMounted(load)
             :value="tl.id"
           />
         </el-select>
+        <el-button @click="router.push(`/characters/${charId}`)">时间轴列表</el-button>
         <el-button @click="router.push(`/continue/${charId}`)">新建时间轴</el-button>
         <el-button :disabled="!nodes.length || pageLoading" @click="openExport">导出文字</el-button>
+        <el-button :disabled="!nodes.length || pageLoading" @click="openNarrativeChange">
+          叙述变更
+        </el-button>
         <el-button :disabled="!nodes.length || pageLoading" @click="openLightNovelPicker">
           生成轻小说
         </el-button>
-        <el-button @click="router.push('/history')">生成历史</el-button>
+        <el-button @click="router.push('/characters')">人物列表</el-button>
         <el-button @click="showProfile = !showProfile">
           {{ showProfile ? '隐藏' : '查看' }}档案
         </el-button>
@@ -328,20 +406,24 @@ onMounted(load)
       </div>
     </el-collapse-transition>
 
-    <div class="timeline-layout">
+    <div class="timeline-layout" :class="{ 'detail-collapsed': !detailPanelOpen }">
       <section class="col-timeline">
         <div v-loading="pageLoading" class="page-card timeline-scroll">
           <TimelineAxis
             :nodes="nodes"
             :selected-id="selectedNode?.id"
             :profile="profile"
+            :reading-focus="!detailPanelOpen"
             @select="onSelect"
           />
         </div>
       </section>
 
-      <aside class="col-dock col-dock-editor">
+      <aside v-show="detailPanelOpen" class="col-dock col-dock-editor">
         <div class="dock-panel page-card">
+          <div class="dock-panel-head">
+            <el-button text type="primary" @click="closeDetailPanel">← 收起详情</el-button>
+          </div>
           <NodeEditor
             :character-id="charId"
             :node="selectedNode"
@@ -374,6 +456,39 @@ onMounted(load)
         </div>
       </aside>
     </div>
+
+    <el-dialog
+      v-model="narrativeChangeVisible"
+      title="叙述变更"
+      width="min(560px, 92vw)"
+      destroy-on-close
+    >
+      <p class="export-hint">
+        用一句话描述希望如何变更时间轴，AI 会自动定位相关节点、修改或插入，并重算后续人生。无需手动选中节点。
+      </p>
+      <el-form label-position="top">
+        <el-form-item label="变更叙述" required>
+          <el-input
+            v-model="narrativeChangeInstruction"
+            type="textarea"
+            :rows="4"
+            placeholder="例如：诸葛亮病逝于白帝城托孤后一天"
+            maxlength="500"
+            show-word-limit
+          />
+        </el-form-item>
+        <el-form-item label="后续节点规模">
+          <el-input-number v-model="narrativeChangeTargetNodes" :min="5" :max="50" />
+        </el-form-item>
+        <ModelSelector v-model="narrativeChangeModel" />
+      </el-form>
+      <template #footer>
+        <el-button @click="narrativeChangeVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="regenVisible" @click="confirmNarrativeChange">
+          应用并重算后续
+        </el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="lightNovelPickerVisible"
@@ -527,10 +642,34 @@ onMounted(load)
   grid-template-columns: minmax(280px, 1fr) 400px 320px;
   gap: 16px;
   align-items: stretch;
+  transition: grid-template-columns 0.25s ease;
+}
+
+.timeline-layout.detail-collapsed {
+  grid-template-columns: minmax(0, 1fr) 300px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.timeline-layout.detail-collapsed .col-timeline .timeline-scroll {
+  padding: 20px 28px 28px;
 }
 
 .col-timeline {
   min-width: 0;
+}
+
+.dock-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin: -4px 0 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #ebeef5;
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 2;
 }
 
 .col-dock {
@@ -552,6 +691,10 @@ onMounted(load)
   .timeline-layout {
     grid-template-columns: minmax(0, 1fr) 360px;
   }
+  .timeline-layout.detail-collapsed {
+    grid-template-columns: minmax(0, 1fr) 280px;
+    max-width: none;
+  }
   .col-dock-side {
     grid-column: 1 / -1;
   }
@@ -561,8 +704,16 @@ onMounted(load)
 }
 
 @media (max-width: 900px) {
-  .timeline-layout {
+  .timeline-layout,
+  .timeline-layout.detail-collapsed {
     grid-template-columns: 1fr;
+    max-width: none;
+  }
+  .col-dock-editor {
+    order: 2;
+  }
+  .col-dock-side {
+    order: 3;
   }
   .col-dock .dock-panel {
     position: static;

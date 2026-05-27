@@ -22,3 +22,17 @@ func fullTailPromptName(mode string) string {
 	}
 	return "regenerate_full_tail_random.txt"
 }
+
+func regenerateEventsPromptName(mode string) string {
+	if mode == model.ModeFamous {
+		return "regenerate_node_events_famous.txt"
+	}
+	return "regenerate_node_events_random.txt"
+}
+
+func planNarrativeChangePromptName(mode string) string {
+	if mode == model.ModeFamous {
+		return "plan_narrative_change_famous.txt"
+	}
+	return "plan_narrative_change_random.txt"
+}

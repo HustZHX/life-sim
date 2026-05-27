@@ -841,7 +841,9 @@ func (s *CharacterService) runRegenerate(ctx context.Context, jobID, characterID
 	modelID := req.Model
 	job, _ := s.store.GetJob(jobID)
 	job.Status = model.JobRunning
-	job.Progress = 15
+	if job.Progress < 25 {
+		job.Progress = 15
+	}
 	job.Model = modelID
 	_ = s.store.UpdateJob(job)
 
@@ -957,7 +959,7 @@ func (s *CharacterService) runRegenerate(ctx context.Context, jobID, characterID
 		TimelineID:      timeline.ID,
 		ParentVersionID: timeline.CurrentVersionID,
 		TriggerNodeID:   edited.ID,
-		ChangeSummary:   fmt.Sprintf("编辑节点 #%d 后重算寿命并全新生成后续（卒于%d年）", edited.Sequence, profile.DeathYear),
+		ChangeSummary:   regenerateVersionSummary(req, edited.Sequence, profile.DeathYear),
 		CreatedAt:       time.Now(),
 	}
 
@@ -1043,4 +1045,11 @@ func (s *CharacterService) Rollback(characterID, versionID string) (*model.Chara
 
 func (s *CharacterService) GetJob(jobID string) (*model.Job, error) {
 	return s.store.GetJob(jobID)
+}
+
+func regenerateVersionSummary(req model.PatchNodeRequest, anchorSeq, deathYear int) string {
+	if req.ChangeSummary != "" {
+		return req.ChangeSummary
+	}
+	return fmt.Sprintf("编辑节点 #%d 后重算寿命并全新生成后续（卒于%d年）", anchorSeq, deathYear)
 }

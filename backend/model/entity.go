@@ -176,6 +176,25 @@ type PatchNodeRequest struct {
 	ConfirmedDeathYear  int    `json:"confirmed_death_year,omitempty"`
 	ConfirmedDeathCause string `json:"confirmed_death_cause,omitempty"`
 	LifespanReasoning   string `json:"lifespan_reasoning,omitempty"`
+	ChangeSummary       string `json:"change_summary,omitempty"`
+}
+
+// RegenerateNodeEventsRequest 根据标题重新生成节点经历
+type RegenerateNodeEventsRequest struct {
+	Title string `json:"title"`
+	Model string `json:"model"`
+}
+
+type RegenerateNodeEventsResponse struct {
+	Events string `json:"events"`
+}
+
+// NarrativeChangeRequest 用自然语言叙述变更时间轴
+type NarrativeChangeRequest struct {
+	TimelineID      string `json:"timeline_id"`
+	Instruction     string `json:"instruction"`
+	Model           string `json:"model"`
+	TargetNodeCount int    `json:"target_node_count,omitempty"`
 }
 
 // LifespanPreviewRequest 预览寿命（编辑节点后）

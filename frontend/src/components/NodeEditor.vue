@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { EditPen } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import {
   api,
@@ -46,6 +47,9 @@ const emit = defineEmits<{
   narrative: [kind: Exclude<NarrativeKind, 'light_novel'>, model: AIModelId]
 }>()
 
+type UiMode = 'read' | 'edit'
+
+const uiMode = ref<UiMode>('read')
 const form = ref({
   title: '',
   events: '',
@@ -61,6 +65,7 @@ const regenConfig = ref<TimelineConfig>({
 })
 
 const previewLoading = ref(false)
+const eventsRegenerating = ref(false)
 const lifespanPreview = ref<LifespanPreviewResponse | null>(null)
 const lifespanConfirmed = ref(false)
 const confirmedDeathYear = ref(0)
@@ -70,6 +75,15 @@ const confirmedLifespanReasoning = ref('')
 const entityContext = computed<EntityHighlightContext>(() =>
   entityContextFromNode(props.node, props.profile ?? null)
 )
+
+function syncFormFromNode(n: LifeNode) {
+  form.value = {
+    title: n.title,
+    events: n.events,
+    thoughts: n.thoughts,
+    personality_snapshot: n.personality_snapshot,
+  }
+}
 
 function resetLifespanFlow() {
   lifespanPreview.value = null
@@ -83,12 +97,8 @@ watch(
   () => props.node,
   (n) => {
     if (n) {
-      form.value = {
-        title: n.title,
-        events: n.events,
-        thoughts: n.thoughts,
-        personality_snapshot: n.personality_snapshot,
-      }
+      syncFormFromNode(n)
+      uiMode.value = 'read'
       resetLifespanFlow()
     }
   },
@@ -98,7 +108,7 @@ watch(
 watch(
   () => [form.value.title, form.value.events] as const,
   () => {
-    if (lifespanPreview.value || lifespanConfirmed.value) {
+    if (uiMode.value === 'edit' && (lifespanPreview.value || lifespanConfirmed.value)) {
       resetLifespanFlow()
     }
   }
@@ -119,8 +129,42 @@ function buildPatch() {
   return { ...form.value }
 }
 
+function enterEdit() {
+  if (props.node) syncFormFromNode(props.node)
+  uiMode.value = 'edit'
+}
+
+function cancelEdit() {
+  if (props.node) syncFormFromNode(props.node)
+  uiMode.value = 'read'
+  resetLifespanFlow()
+}
+
 function openNarrative(kind: Exclude<NarrativeKind, 'light_novel'>) {
   emit('narrative', kind, model.value)
+}
+
+async function regenerateEventsFromTitle() {
+  if (!props.node || !props.characterId) return
+  const title = (uiMode.value === 'edit' ? form.value.title : props.node.title).trim()
+  if (!title) {
+    ElMessage.warning('请先填写或确认节点标题')
+    return
+  }
+  eventsRegenerating.value = true
+  try {
+    const res = await api.regenerateNodeEvents(props.characterId, props.node.id, {
+      title,
+      model: model.value,
+    })
+    form.value.events = res.events
+    uiMode.value = 'edit'
+    ElMessage.success('已根据标题重新生成经历，可继续编辑或更新内心/性格')
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '生成经历失败')
+  } finally {
+    eventsRegenerating.value = false
+  }
 }
 
 function syncCurrentInner() {
@@ -183,17 +227,113 @@ function regenerateAllSubsequent() {
 </script>
 
 <template>
-  <div v-if="node" class="editor">
-    <h3>编辑节点 · {{ node.year }} 年</h3>
+  <div v-if="node" class="node-detail">
+    <div class="detail-head">
+      <div>
+        <h3>节点详情 · {{ node.year }} 年</h3>
+        <p class="sub-meta">第 {{ node.sequence + 1 }} 节点 · {{ node.age }} 岁</p>
+      </div>
+      <div v-if="uiMode === 'read'" class="head-actions">
+        <el-button type="primary" :icon="EditPen" @click="enterEdit">编辑</el-button>
+      </div>
+      <div v-else class="head-actions">
+        <el-button @click="cancelEdit">取消</el-button>
+      </div>
+    </div>
+
     <NodeSceneMeta :scene="node.scene" />
 
-    <el-form label-position="top">
+    <!-- 阅读模式 -->
+    <div v-if="uiMode === 'read'" class="read-panel">
+      <div class="read-section">
+        <div class="section-label">标题</div>
+        <div class="section-body title-body">
+          <HighlightedText :text="node.title" :context="entityContext" tag="span" />
+        </div>
+      </div>
+
+      <div class="read-section">
+        <div class="section-label">经历</div>
+        <div class="section-body prose">
+          <HighlightedText :text="node.events" :context="entityContext" tag="span" />
+        </div>
+      </div>
+
+      <div v-if="node.thoughts" class="read-section">
+        <div class="section-label">内心想法</div>
+        <div class="section-body prose muted">
+          <HighlightedText :text="node.thoughts" :context="entityContext" tag="span" />
+        </div>
+      </div>
+
+      <div v-if="node.personality_snapshot" class="read-section">
+        <div class="section-label">性格快照</div>
+        <div class="section-body prose muted">
+          <HighlightedText
+            :text="node.personality_snapshot"
+            :context="entityContext"
+            tag="span"
+          />
+        </div>
+      </div>
+
+      <div v-if="node.trait_changes?.length" class="read-section">
+        <div class="section-label">性格/思想变更</div>
+        <el-card v-for="(t, i) in node.trait_changes" :key="i" size="small" class="trait-card">
+          <strong>{{ fieldLabel(t.field, 'trait') }}</strong>：
+          <HighlightedText :text="`${t.before} → ${t.after}`" :context="entityContext" tag="span" />
+          <p class="reason">
+            <HighlightedText :text="t.reason" :context="entityContext" tag="span" />
+          </p>
+        </el-card>
+      </div>
+
+      <ModelSelector v-model="model" class="read-model" />
+
+      <div class="read-toolbar">
+        <el-button
+          type="primary"
+          plain
+          :loading="eventsRegenerating"
+          :disabled="!!loading"
+          @click="regenerateEventsFromTitle"
+        >
+          根据标题重新生成经历
+        </el-button>
+      </div>
+
+      <div class="narrative-box">
+        <div class="narrative-head">多视角叙事</div>
+        <p class="narrative-hint">按需生成，结果会缓存；可在弹窗中重新生成。</p>
+        <div class="narrative-actions">
+          <el-button plain @click="openNarrative('diary')">查看日记</el-button>
+          <el-button plain @click="openNarrative('letter')">查看书信</el-button>
+          <el-button plain @click="openNarrative('archive')">查看档案</el-button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 编辑模式 -->
+    <el-form v-else label-position="top" class="edit-panel">
       <el-form-item label="标题">
         <el-input v-model="form.title" />
       </el-form-item>
 
+      <div class="regen-events-row">
+        <el-button
+          type="primary"
+          plain
+          :loading="eventsRegenerating"
+          :disabled="!!loading"
+          @click="regenerateEventsFromTitle"
+        >
+          根据标题重新生成经历
+        </el-button>
+        <span class="regen-hint">保留标题，由 AI 重写下方经历正文</span>
+      </div>
+
       <el-form-item label="经历">
-        <el-input v-model="form.events" type="textarea" :rows="4" />
+        <el-input v-model="form.events" type="textarea" :rows="6" />
       </el-form-item>
 
       <div class="derived-box">
@@ -209,13 +349,10 @@ function regenerateAllSubsequent() {
         </el-form-item>
 
         <div v-if="node.trait_changes?.length" class="traits-inline">
-          <div class="trait-label">性格/思想变更</div>
+          <div class="trait-label">性格/思想变更（只读，重算后更新）</div>
           <el-card v-for="(t, i) in node.trait_changes" :key="i" size="small" class="trait-card">
             <strong>{{ fieldLabel(t.field, 'trait') }}</strong>：
             <HighlightedText :text="`${t.before} → ${t.after}`" :context="entityContext" tag="span" />
-            <p class="reason">
-              <HighlightedText :text="t.reason" :context="entityContext" tag="span" />
-            </p>
           </el-card>
         </div>
       </div>
@@ -224,7 +361,6 @@ function regenerateAllSubsequent() {
 
       <div class="narrative-box">
         <div class="narrative-head">多视角叙事</div>
-        <p class="narrative-hint">按需生成，结果会缓存；可在弹窗中重新生成。</p>
         <div class="narrative-actions">
           <el-button plain @click="openNarrative('diary')">查看日记</el-button>
           <el-button plain @click="openNarrative('letter')">查看书信</el-button>
@@ -299,7 +435,7 @@ function regenerateAllSubsequent() {
       </div>
 
       <el-alert
-        title="三种重算粒度：① 仅本节点内心 ② 保留后续经历只重算内心 ③ 完全重算须先预览确认寿命再生成后续节点。"
+        title="编辑后可用「更新本节点」或「完全重算后续」提交 AI 重算。"
         type="info"
         :closable="false"
         show-icon
@@ -313,12 +449,79 @@ function regenerateAllSubsequent() {
       title="任务进度"
     />
   </div>
-  <el-empty v-else description="点击左侧节点查看或编辑" />
+  <el-empty v-else description="点击左侧节点打开详情" />
 </template>
 
 <style scoped>
-.editor h3 {
-  margin-top: 0;
+.node-detail h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+.detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.sub-meta {
+  margin: 4px 0 0;
+  font-size: 0.82rem;
+  color: #909399;
+}
+.head-actions {
+  flex-shrink: 0;
+}
+.read-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.read-section {
+  margin-bottom: 12px;
+}
+.section-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #909399;
+  margin-bottom: 6px;
+}
+.section-body {
+  line-height: 1.65;
+  color: #303133;
+  font-size: 0.92rem;
+}
+.section-body.prose {
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.section-body.prose.muted {
+  background: #fafafa;
+  color: #606266;
+}
+.title-body {
+  font-weight: 600;
+  font-size: 1rem;
+}
+.read-toolbar {
+  margin: 8px 0 12px;
+}
+.read-model {
+  margin-bottom: 8px;
+}
+.regen-events-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.regen-hint {
+  font-size: 0.8rem;
+  color: #909399;
 }
 .derived-box {
   border: 2px solid #dcdfe6;
