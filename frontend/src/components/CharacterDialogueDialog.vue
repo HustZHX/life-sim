@@ -6,6 +6,7 @@ import CharacterMemoryPanel from '@/components/CharacterMemoryPanel.vue'
 import type { DialogueSessionSummary, LifeNode } from '@/api/client'
 import { useCharacterDialogue } from '@/composables/useCharacterDialogue'
 import { fieldLabel } from '@/constants/fieldLabels'
+import { useLayoutStore } from '@/stores/layout'
 
 const props = defineProps<{
   allNodes?: LifeNode[]
@@ -57,6 +58,8 @@ const {
   removeMemory,
   close,
 } = useCharacterDialogue()
+
+const layout = useLayoutStore()
 
 const chatScrollRef = ref<HTMLElement | null>(null)
 
@@ -124,7 +127,8 @@ defineExpose({ open: openDialogue, openHistory: openDialogueHistory })
   <el-dialog
     :model-value="visible"
     :title="dialogTitle"
-    width="720px"
+    :width="layout.isMobile ? 'min(720px, 92vw)' : '720px'"
+    :fullscreen="layout.isMobile"
     class="dialogue-dialog"
     destroy-on-close
     @update:model-value="(v: boolean) => !v && close()"
@@ -307,7 +311,8 @@ defineExpose({ open: openDialogue, openHistory: openDialogueHistory })
     <el-dialog
       v-model="impactDialogVisible"
       title="对话可能改变了他的性格或思想"
-      width="480px"
+      :width="layout.isMobile ? 'min(480px, 92vw)' : '480px'"
+      :fullscreen="layout.isMobile"
       append-to-body
     >
       <p v-if="pendingImpact?.summary" class="impact-summary">{{ pendingImpact.summary }}</p>

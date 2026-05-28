@@ -5,6 +5,7 @@ import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, type SavedLightNovelMeta, pollJob } from '@/api/client'
 import type { AIModelId, BranchNode, LifeNode, Timeline, WorldLine } from '@/api/client'
+import { useLayoutStore } from '@/stores/layout'
 import { DEFAULT_AI_MODEL, DEFAULT_CASCADE_MODEL, modelDisplayLabel } from '@/constants/models'
 import TimelineAxis from '@/components/TimelineAxis.vue'
 import WorldLinePanel from '@/components/WorldLinePanel.vue'
@@ -32,6 +33,7 @@ import { timelineJobLabel, versionChangeLabel, isTimelineGenerating } from '@/co
 const route = useRoute()
 const router = useRouter()
 const charId = route.params.id as string
+const layout = useLayoutStore()
 
 const nodes = ref<LifeNode[]>([])
 const worldLine = ref<WorldLine | null>(null)
@@ -47,6 +49,7 @@ const activatingBranchId = ref('')
 const pageLoading = ref(false)
 const showProfile = ref(false)
 const detailPanelOpen = ref(false)
+const mobileTab = ref<'nodes' | 'detail' | 'branch'>('nodes')
 
 const dialogueRef = ref<InstanceType<typeof CharacterDialogueDialog> | null>(null)
 
@@ -463,8 +466,8 @@ async function load() {
   pageLoading.value = true
   try {
     const tlRes = await api.listTimelines(charId).catch(() => ({ timelines: [] as Timeline[] }))
-    timelines.value = tlRes.timelines
-    if (!tlRes.timelines.length) {
+    timelines.value = Array.isArray(tlRes.timelines) ? tlRes.timelines : []
+    if (!timelines.value.length) {
       router.replace(`/characters/${charId}`)
       return
     }
@@ -527,6 +530,11 @@ watch(
 
 function onSelect(node: LifeNode) {
   selectedNode.value = node
+  if (layout.isMobile) {
+    mobileTab.value = 'detail'
+    detailPanelOpen.value = false
+    return
+  }
   detailPanelOpen.value = true
 }
 
@@ -759,24 +767,44 @@ onMounted(async () => {
             :value="tl.id"
           />
         </el-select>
-        <el-button @click="router.push(`/characters/${charId}`)">时间轴列表</el-button>
-        <el-button @click="router.push(`/continue/${charId}`)">新建时间轴</el-button>
-        <el-button :disabled="!nodes.length || pageLoading" @click="openExport">导出文字</el-button>
-        <el-button :disabled="pageLoading" @click="onOpenDialogueHistory">历史对话</el-button>
-        <el-button :disabled="!nodes.length || pageLoading" @click="openNarrativeChange">
-          叙述变更
-        </el-button>
-        <el-button :disabled="!nodes.length || pageLoading" @click="openLightNovelPicker">
-          生成轻小说
-        </el-button>
-        <el-badge :value="lightNovelActiveCount" :hidden="!lightNovelActiveCount" type="warning">
-          <el-button :disabled="pageLoading" @click="openLightNovelJobList">生成队列</el-button>
-        </el-badge>
-        <el-button :disabled="pageLoading" @click="openSavedNovels">已保存轻小说</el-button>
-        <el-button @click="router.push('/characters')">人物列表</el-button>
-        <el-button @click="showProfile = !showProfile">
-          {{ showProfile ? '隐藏' : '查看' }}档案
-        </el-button>
+        <template v-if="layout.isMobile">
+          <el-button :disabled="!nodes.length || pageLoading" @click="openExport">导出</el-button>
+          <el-button :disabled="pageLoading" @click="openSavedNovels">轻小说</el-button>
+          <el-button @click="showProfile = !showProfile">{{ showProfile ? '隐藏' : '档案' }}</el-button>
+          <el-dropdown trigger="click">
+            <el-button>更多</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item @click="router.push(`/characters/${charId}`)">时间轴列表</el-dropdown-item>
+                <el-dropdown-item @click="router.push('/characters')">人物列表</el-dropdown-item>
+                <el-dropdown-item :disabled="pageLoading" @click="onOpenDialogueHistory">历史对话</el-dropdown-item>
+                <el-dropdown-item :disabled="pageLoading" @click="openLightNovelJobList">
+                  生成队列{{ lightNovelActiveCount ? `（${lightNovelActiveCount}）` : '' }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </template>
+        <template v-else>
+          <el-button @click="router.push(`/characters/${charId}`)">时间轴列表</el-button>
+          <el-button @click="router.push(`/continue/${charId}`)">新建时间轴</el-button>
+          <el-button :disabled="!nodes.length || pageLoading" @click="openExport">导出文字</el-button>
+          <el-button :disabled="pageLoading" @click="onOpenDialogueHistory">历史对话</el-button>
+          <el-button :disabled="!nodes.length || pageLoading" @click="openNarrativeChange">
+            叙述变更
+          </el-button>
+          <el-button :disabled="!nodes.length || pageLoading" @click="openLightNovelPicker">
+            生成轻小说
+          </el-button>
+          <el-badge :value="lightNovelActiveCount" :hidden="!lightNovelActiveCount" type="warning">
+            <el-button :disabled="pageLoading" @click="openLightNovelJobList">生成队列</el-button>
+          </el-badge>
+          <el-button :disabled="pageLoading" @click="openSavedNovels">已保存轻小说</el-button>
+          <el-button @click="router.push('/characters')">人物列表</el-button>
+          <el-button @click="showProfile = !showProfile">
+            {{ showProfile ? '隐藏' : '查看' }}档案
+          </el-button>
+        </template>
       </div>
     </div>
 
@@ -786,7 +814,70 @@ onMounted(async () => {
       </div>
     </el-collapse-transition>
 
-    <div class="timeline-layout" :class="{ 'detail-collapsed': !detailPanelOpen }">
+    <div v-if="layout.isMobile" class="mobile-tabs">
+      <el-tabs v-model="mobileTab" stretch>
+        <el-tab-pane label="节点" name="nodes">
+          <div v-loading="pageLoading" class="page-card timeline-dual">
+            <WorldLinePanel
+              class="track-world"
+              :character-id="charId"
+              :timeline-id="selectedTimelineId"
+              :world-line="worldLine"
+              :nodes="nodes"
+              :loading="pageLoading || jobBusy"
+              :refreshing="jobBusy"
+              @updated="onWorldLineUpdated"
+              @apply-job="onWorldLineApplyJob"
+              @refresh="refreshWorldLine"
+            />
+            <div class="track-life">
+              <header class="track-life-head">
+                <h3>人生节点</h3>
+                <span v-if="nodes.length" class="track-life-meta">{{ nodes.length }} 个节点</span>
+              </header>
+              <TimelineAxis
+                :nodes="nodes"
+                :selected-id="selectedNode?.id"
+                :profile="profile"
+                :append-disabled="true"
+                :rollback-enabled="false"
+                @select="onSelect"
+              />
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="详情" name="detail">
+          <div class="page-card">
+            <el-empty v-if="!selectedNode" description="请选择一个节点查看详情" />
+            <NodeEditor
+              v-else
+              :character-id="charId"
+              :node="selectedNode"
+              :profile="profile"
+              :read-only="true"
+              :loading="jobBusy"
+              @narrative="(kind, model) => selectedNode && openNodeNarrative(charId, selectedNode, kind, model)"
+              @dialogue="onOpenDialogue"
+            />
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="分支" name="branch">
+          <div class="page-card">
+            <BranchFlowchart
+              :roots="branchRoots"
+              :active-version-id="currentVersionId"
+              :loading="branchLoading || pageLoading"
+              :activating-id="activatingBranchId"
+              @activate="onActivateBranch"
+            />
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </div>
+
+    <div v-else class="timeline-layout" :class="{ 'detail-collapsed': !detailPanelOpen }">
       <section class="col-timeline">
         <div v-loading="pageLoading" class="page-card timeline-dual">
           <WorldLinePanel

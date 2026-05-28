@@ -4,8 +4,10 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api, type HistoryItem } from '@/api/client'
 import { formatDateTime, modeLabel, statusLabel } from '@/constants/characterLabels'
+import { useLayoutStore } from '@/stores/layout'
 
 const router = useRouter()
+const layout = useLayoutStore()
 const items = ref<HistoryItem[]>([])
 const loading = ref(false)
 const filterMode = ref('')
@@ -32,7 +34,7 @@ async function load() {
   loading.value = true
   try {
     const res = await api.listHistory()
-    items.value = res.items
+    items.value = Array.isArray(res.items) ? res.items : []
   } catch (e: unknown) {
     ElMessage.error(e instanceof Error ? e.message : '加载失败')
   } finally {
@@ -78,13 +80,60 @@ onMounted(load)
           v-model="keyword"
           placeholder="搜索姓名、时代…"
           clearable
-          style="width: 220px"
+          style="width: min(320px, 72vw)"
         />
         <el-button :loading="loading" @click="load">刷新</el-button>
       </div>
     </div>
 
+    <div v-if="layout.isMobile" class="mobile-list">
+      <div v-if="loading" class="mobile-loading">加载中…</div>
+      <div v-else-if="!filteredItems.length" class="mobile-empty">暂无人物，去首页创建一位吧</div>
+      <div v-else class="mobile-cards">
+        <button
+          v-for="row in filteredItems"
+          :key="row.id"
+          type="button"
+          class="mobile-card"
+          @click="openCharacter(row)"
+        >
+          <div class="card-head">
+            <div class="card-title">{{ row.display_name || '未命名' }}</div>
+            <el-tag size="small" :type="row.mode === 'famous' ? 'primary' : 'success'">
+              {{ modeLabel[row.mode] || row.mode }}
+            </el-tag>
+          </div>
+          <div class="card-meta">
+            <span v-if="row.era" class="meta-item">{{ row.era }}</span>
+            <span v-if="row.birth_year || row.death_year" class="meta-item">
+              {{ row.birth_year || '?' }} — {{ row.death_year || '?' }}
+            </span>
+            <span v-if="row.timeline_count && row.timeline_count > 0" class="meta-item">
+              时间轴 {{ row.timeline_count }}
+            </span>
+            <span v-if="row.node_count > 0" class="meta-item">节点 {{ row.node_count }}</span>
+          </div>
+          <div class="card-foot">
+            <el-tag
+              size="small"
+              :type="
+                row.status === 'timeline_ready'
+                  ? 'success'
+                  : row.status === 'profile_ready'
+                    ? 'warning'
+                    : 'info'
+              "
+            >
+              {{ statusLabel[row.status] || row.status }}
+            </el-tag>
+            <span class="updated-at">{{ formatDateTime(row.updated_at) }}</span>
+          </div>
+        </button>
+      </div>
+    </div>
+
     <el-table
+      v-else
       v-loading="loading"
       :data="filteredItems"
       stripe
@@ -186,5 +235,68 @@ onMounted(load)
 }
 :deep(.el-table__row) {
   cursor: pointer;
+}
+
+.mobile-list {
+  margin-top: 12px;
+}
+.mobile-loading,
+.mobile-empty {
+  padding: 16px 0;
+  color: #909399;
+  text-align: center;
+}
+.mobile-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mobile-card {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #ebeef5;
+  border-radius: 12px;
+  background: #fff;
+  padding: 14px 14px 12px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.04);
+}
+.card-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+.card-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #16213e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-meta {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  color: #606266;
+  font-size: 0.9rem;
+}
+.meta-item {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f5f7fa;
+}
+.card-foot {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.updated-at {
+  color: #909399;
+  font-size: 0.85rem;
+  white-space: nowrap;
 }
 </style>

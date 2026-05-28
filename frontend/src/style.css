@@ -3,6 +3,12 @@
   line-height: 1.6;
   color: #1a1a2e;
   background: #f0f2f8;
+  --layout-touch-min: 44px;
+  --layout-page-pad-desktop: 24px;
+  --layout-page-pad-mobile-y: 12px;
+  --layout-page-pad-mobile-x: 16px;
+  --layout-bottom-nav-h: 56px;
+  --layout-header-mobile-h: 48px;
 }
 
 * {
@@ -57,6 +63,34 @@ body {
   max-width: 1500px;
   margin: 0 auto;
   padding: 24px;
+}
+
+.app-shell--mobile .app-header {
+  padding: 10px var(--layout-page-pad-mobile-x);
+  gap: 10px;
+}
+
+.app-shell--mobile .app-main {
+  max-width: none;
+  padding: var(--layout-page-pad-mobile-y) var(--layout-page-pad-mobile-x)
+    calc(var(--layout-page-pad-mobile-y) + var(--layout-bottom-nav-h)) var(--layout-page-pad-mobile-x);
+}
+
+.app-shell--mobile .page-card {
+  padding: 16px;
+}
+
+.app-shell--mobile .tagline {
+  display: none;
+}
+
+/* iOS safe-area support */
+.app-shell--mobile .app-main {
+  padding-left: calc(var(--layout-page-pad-mobile-x) + env(safe-area-inset-left));
+  padding-right: calc(var(--layout-page-pad-mobile-x) + env(safe-area-inset-right));
+  padding-bottom: calc(
+    var(--layout-page-pad-mobile-y) + var(--layout-bottom-nav-h) + env(safe-area-inset-bottom)
+  );
 }
 
 /* 避免 el-loading 在整页容器上产生 overflow:hidden 导致 sticky 失效 */
