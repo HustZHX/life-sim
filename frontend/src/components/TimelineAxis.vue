@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
-import type { LifeNode, Profile } from '@/api/client'
+import type { LifeNode, Profile, WorldLine, WorldLineEvent } from '@/api/client'
 import { fieldLabel } from '@/constants/fieldLabels'
 import { entityContextFromNode } from '@/utils/textEntities'
 import { isLivingProfile } from '@/utils/timelineDensity'
@@ -10,6 +10,7 @@ import NodeSceneMeta from '@/components/NodeSceneMeta.vue'
 
 const props = defineProps<{
   nodes: LifeNode[]
+  worldLine?: WorldLine | null
   selectedId?: string
   profile?: Profile | null
   /** 继续推演进行中或时间轴生成中 */
@@ -29,8 +30,10 @@ const showAppendSlot = computed(
 )
 
 const expandedIds = ref<Set<string>>(new Set())
+const expandedWorldIds = ref<Set<string>>(new Set())
 
 const showFullContent = (nodeId: string) => expandedIds.value.has(nodeId)
+const showWorldFull = (id: string) => expandedWorldIds.value.has(id)
 
 function contextFor(node: LifeNode) {
   return entityContextFromNode(node, props.profile ?? null)
@@ -38,12 +41,16 @@ function contextFor(node: LifeNode) {
 
 function toggleExpand(nodeId: string) {
   const next = new Set(expandedIds.value)
-  if (next.has(nodeId)) {
-    next.delete(nodeId)
-  } else {
-    next.add(nodeId)
-  }
+  if (next.has(nodeId)) next.delete(nodeId)
+  else next.add(nodeId)
   expandedIds.value = next
+}
+
+function toggleWorld(id: string) {
+  const next = new Set(expandedWorldIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedWorldIds.value = next
 }
 
 function expandAll() {
@@ -53,6 +60,31 @@ function expandAll() {
 function collapseAll() {
   expandedIds.value = new Set()
 }
+
+type AxisItem =
+  | { kind: 'world'; id: string; year: number; originalIndex: number; ev: WorldLineEvent }
+  | { kind: 'node'; id: string; year: number; node: LifeNode }
+
+const axisItems = computed<AxisItem[]>(() => {
+  const out: AxisItem[] = []
+  const events = props.worldLine?.events ?? []
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i]
+    if (!ev || !ev.year) continue
+    out.push({ kind: 'world', id: `w-${ev.year}-${i}`, year: ev.year, originalIndex: i, ev })
+  }
+  for (const node of props.nodes) {
+    out.push({ kind: 'node', id: node.id, year: node.year, node })
+  }
+  out.sort((a, b) => {
+    if (a.year !== b.year) return a.year - b.year
+    if (a.kind !== b.kind) return a.kind === 'world' ? -1 : 1 // 同年：世界线在前
+    if (a.kind === 'node' && b.kind === 'node') return a.node.sequence - b.node.sequence
+    if (a.kind === 'world' && b.kind === 'world') return a.originalIndex - b.originalIndex
+    return 0
+  })
+  return out
+})
 
 const maxSequence = computed(() => {
   if (!props.nodes.length) return 0
@@ -71,115 +103,152 @@ function canRollbackTo(node: LifeNode) {
       <el-button size="small" text @click="collapseAll">全部收起</el-button>
     </div>
 
-    <el-timeline>
-      <el-timeline-item
-        v-for="node in nodes"
-        :key="node.id"
-        :timestamp="`${node.year} 年 · ${node.age} 岁`"
-        placement="top"
-        :type="node.trait_changes?.length ? 'warning' : 'primary'"
-        :hollow="selectedId !== node.id"
-      >
-        <el-card
-          class="node-card"
-          :class="{ active: selectedId === node.id, expanded: showFullContent(node.id) }"
-          shadow="hover"
-          @click="emit('select', node)"
-        >
-          <div class="card-head">
-            <h4>
-              <HighlightedText :text="node.title" :context="contextFor(node)" tag="span" />
-            </h4>
-            <div class="card-actions">
-              <el-button
-                v-if="canRollbackTo(node)"
-                size="small"
-                text
-                type="danger"
-                class="rollback-btn"
-                @click.stop="emit('rollback', node)"
-              >
-                回退至此
-              </el-button>
+    <div class="axis-list">
+      <div v-for="item in axisItems" :key="item.id" class="axis-row">
+        <div class="axis-col axis-col--world">
+          <el-card
+            v-if="item.kind === 'world'"
+            class="world-card"
+            :class="{ expanded: showWorldFull(item.id) }"
+            shadow="hover"
+            @click="toggleWorld(item.id)"
+          >
+            <div class="world-head">
+              <h4 class="world-title">{{ item.ev.name }}</h4>
               <el-button
                 size="small"
                 text
                 type="primary"
-                class="expand-btn"
-                @click.stop="toggleExpand(node.id)"
+                class="world-expand-btn"
+                @click.stop="toggleWorld(item.id)"
               >
-                {{ showFullContent(node.id) ? '收起' : '展开' }}
+                {{ showWorldFull(item.id) ? '收起' : '展开' }}
               </el-button>
             </div>
-          </div>
+            <template v-if="showWorldFull(item.id)">
+              <p v-if="item.ev.description" class="world-text">{{ item.ev.description }}</p>
+              <p v-if="item.ev.impact" class="world-text muted">{{ item.ev.impact }}</p>
+              <p v-if="item.ev.divergence_note" class="world-text warn">{{ item.ev.divergence_note }}</p>
+              <span v-if="item.ev.caused_by_node_sequence != null" class="world-ref">
+                来源节点 #{{ item.ev.caused_by_node_sequence + 1 }}
+              </span>
+            </template>
+          </el-card>
+        </div>
 
-          <template v-if="showFullContent(node.id)">
-            <NodeSceneMeta :scene="node.scene" />
-            <div class="read-block">
-              <div class="read-label">经历</div>
-              <p class="read-text">
-                <HighlightedText :text="node.events" :context="contextFor(node)" tag="span" />
-              </p>
+        <div class="axis-mid" aria-hidden="true">
+          <div class="axis-dot" />
+          <div class="axis-timestamp">
+            {{ item.kind === 'node' ? `${item.node.year} 年 · ${item.node.age} 岁` : `${item.ev.year} 年` }}
+          </div>
+        </div>
+
+        <div class="axis-col axis-col--node">
+          <el-card
+            v-if="item.kind === 'node'"
+            :id="`node-${item.node.id}`"
+            class="node-card"
+            :class="{
+              active: selectedId === item.node.id,
+              expanded: showFullContent(item.node.id),
+              warning: !!item.node.trait_changes?.length,
+            }"
+            shadow="hover"
+            @click="emit('select', item.node)"
+          >
+            <div class="card-head">
+              <h4>
+                <HighlightedText :text="item.node.title" :context="contextFor(item.node)" tag="span" />
+              </h4>
+              <div class="card-actions">
+                <el-button
+                  v-if="canRollbackTo(item.node)"
+                  size="small"
+                  text
+                  type="danger"
+                  class="rollback-btn"
+                  @click.stop="emit('rollback', item.node)"
+                >
+                  回退至此
+                </el-button>
+                <el-button
+                  size="small"
+                  text
+                  type="primary"
+                  class="expand-btn"
+                  @click.stop="toggleExpand(item.node.id)"
+                >
+                  {{ showFullContent(item.node.id) ? '收起' : '展开' }}
+                </el-button>
+              </div>
             </div>
-            <div v-if="node.thoughts" class="read-block muted">
-              <div class="read-label">内心</div>
-              <p class="read-text">
-                <HighlightedText :text="node.thoughts" :context="contextFor(node)" tag="span" />
-              </p>
-            </div>
-            <div v-if="node.personality_snapshot" class="read-block muted">
-              <div class="read-label">性格</div>
-              <p class="read-text">
-                <HighlightedText
-                  :text="node.personality_snapshot"
-                  :context="contextFor(node)"
-                  tag="span"
-                />
-              </p>
-            </div>
-            <div v-if="node.trait_changes?.length" class="trait-section">
-              <div class="read-label">性格/思想变更</div>
-              <ul class="trait-list">
-                <li v-for="(t, i) in node.trait_changes" :key="i" class="trait-item">
-                  <strong>{{ fieldLabel(t.field, 'trait') }}</strong>：
+
+            <template v-if="showFullContent(item.node.id)">
+              <NodeSceneMeta :scene="item.node.scene" />
+              <div class="read-block">
+                <div class="read-label">经历</div>
+                <p class="read-text">
+                  <HighlightedText :text="item.node.events" :context="contextFor(item.node)" tag="span" />
+                </p>
+              </div>
+              <div v-if="item.node.thoughts" class="read-block muted">
+                <div class="read-label">内心</div>
+                <p class="read-text">
+                  <HighlightedText :text="item.node.thoughts" :context="contextFor(item.node)" tag="span" />
+                </p>
+              </div>
+              <div v-if="item.node.personality_snapshot" class="read-block muted">
+                <div class="read-label">性格</div>
+                <p class="read-text">
                   <HighlightedText
-                    :text="`${t.before} → ${t.after}`"
-                    :context="contextFor(node)"
+                    :text="item.node.personality_snapshot"
+                    :context="contextFor(item.node)"
                     tag="span"
                   />
-                  <p v-if="t.reason" class="trait-reason">
-                    <HighlightedText :text="t.reason" :context="contextFor(node)" tag="span" />
-                  </p>
-                </li>
-              </ul>
-            </div>
-          </template>
-          <ul v-else-if="node.trait_changes?.length" class="trait-compact">
-            <li v-for="(t, i) in node.trait_changes" :key="i">
-              <span class="trait-field">{{ fieldLabel(t.field, 'trait') }}</span>：
-              <HighlightedText
-                :text="`${t.before} → ${t.after}`"
-                :context="contextFor(node)"
-                tag="span"
-              />
-            </li>
-          </ul>
-        </el-card>
-      </el-timeline-item>
+                </p>
+              </div>
+              <div v-if="item.node.trait_changes?.length" class="trait-section">
+                <div class="read-label">性格/思想变更</div>
+                <ul class="trait-list">
+                  <li v-for="(t, i) in item.node.trait_changes" :key="i" class="trait-item">
+                    <strong>{{ fieldLabel(t.field, 'trait') }}</strong>：
+                    <HighlightedText :text="`${t.before} → ${t.after}`" :context="contextFor(item.node)" tag="span" />
+                    <p v-if="t.reason" class="trait-reason">
+                      <HighlightedText :text="t.reason" :context="contextFor(item.node)" tag="span" />
+                    </p>
+                  </li>
+                </ul>
+              </div>
+            </template>
+            <ul v-else-if="item.node.trait_changes?.length" class="trait-compact">
+              <li v-for="(t, i) in item.node.trait_changes" :key="i">
+                <span class="trait-field">{{ fieldLabel(t.field, 'trait') }}</span>：
+                <HighlightedText :text="`${t.before} → ${t.after}`" :context="contextFor(item.node)" tag="span" />
+              </li>
+            </ul>
+          </el-card>
+        </div>
+      </div>
 
-      <el-timeline-item v-if="showAppendSlot" placement="top" type="info" hollow>
-        <button
-          type="button"
-          class="append-next-btn"
-          :disabled="appendDisabled"
-          :title="appendDisabled ? '请等待当前任务完成' : '继续推演下一个节点'"
-          @click="emit('append')"
-        >
-          <el-icon :size="22"><Plus /></el-icon>
-          <span>继续推演</span>
-        </button>
-      </el-timeline-item>
-    </el-timeline>
+      <div v-if="showAppendSlot" class="axis-row axis-row--append">
+        <div class="axis-col axis-col--world" />
+        <div class="axis-mid" aria-hidden="true">
+          <div class="axis-dot axis-dot--append" />
+        </div>
+        <div class="axis-col axis-col--node">
+          <button
+            type="button"
+            class="append-next-btn"
+            :disabled="appendDisabled"
+            :title="appendDisabled ? '请等待当前任务完成' : '继续推演下一个节点'"
+            @click="emit('append')"
+          >
+            <el-icon :size="22"><Plus /></el-icon>
+            <span>继续推演</span>
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -238,6 +307,200 @@ function canRollbackTo(node: LifeNode) {
 
 .rollback-btn {
   padding: 0 4px;
+}
+
+.axis-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.axis-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.9fr) 56px minmax(360px, 1.4fr);
+  column-gap: 12px;
+  align-items: start;
+}
+
+.axis-col {
+  min-width: 0;
+}
+
+.axis-col--world {
+  grid-column: 1;
+}
+
+.axis-mid {
+  grid-column: 2;
+}
+
+.axis-col--node {
+  grid-column: 3;
+}
+
+.axis-mid {
+  position: relative;
+  min-height: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.axis-mid::before {
+  content: '';
+  position: absolute;
+  top: -16px;
+  bottom: -16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2px;
+  background: #e5e7eb;
+}
+
+.axis-dot {
+  position: relative;
+  z-index: 1;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 2px solid #67c23a;
+  margin-top: 4px;
+}
+
+.axis-dot--append {
+  border-color: #909399;
+}
+
+.axis-timestamp {
+  position: relative;
+  z-index: 1;
+  margin-top: 6px;
+  padding: 2px 6px;
+  font-size: 0.78rem;
+  line-height: 1.3;
+  color: #909399;
+  background: #ffffff;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.node-card.warning {
+  border-color: #e6a23c;
+}
+
+.world-card {
+  cursor: pointer;
+  background: #fafafa;
+  border: 1px solid #ebeef5;
+  border-left: 2px solid rgba(103, 194, 58, 0.65);
+}
+
+.world-card.expanded {
+  border-left-color: rgba(230, 162, 60, 0.85);
+}
+
+.world-head {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.world-title {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.28;
+  font-weight: 650;
+  color: #374151;
+}
+
+.world-expand-btn {
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+
+.world-text {
+  margin: 6px 0 0;
+  font-size: 0.79rem;
+  line-height: 1.5;
+  color: #6b7280;
+  white-space: pre-wrap;
+}
+
+.world-text.muted {
+  color: #9ca3af;
+}
+
+.world-text.warn {
+  color: #e6a23c;
+}
+
+.world-ref {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 1px 6px;
+  font-size: 0.7rem;
+  color: #9ca3af;
+  background: rgba(244, 244, 245, 0.7);
+  border-radius: 4px;
+}
+
+.axis-col--node :deep(.el-card__body),
+.axis-col--world :deep(.el-card__body) {
+  min-width: 0;
+}
+
+.axis-col--world :deep(.el-card__body) {
+  padding: 10px 12px;
+}
+
+@media (max-width: 960px) {
+  .axis-list {
+    gap: 12px;
+  }
+
+  .axis-row {
+    grid-template-columns: 24px 1fr;
+    column-gap: 10px;
+  }
+
+  .axis-col--world,
+  .axis-col--node {
+    grid-column: 2;
+  }
+
+  .axis-col--world {
+    margin-bottom: 10px;
+    margin-left: 6px;
+    max-width: 92%;
+  }
+
+  .axis-mid {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    align-items: flex-start;
+    padding-top: 2px;
+  }
+
+  .axis-mid::before {
+    top: 0;
+    bottom: 0;
+    left: 12px;
+    transform: none;
+  }
+
+  .axis-dot {
+    margin-top: 0;
+    transform: translateX(6px);
+  }
+
+  .axis-timestamp {
+    margin-top: 8px;
+    transform: translateX(6px);
+    white-space: normal;
+    max-width: 100%;
+  }
 }
 
 .trait-compact {

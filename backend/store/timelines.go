@@ -46,7 +46,10 @@ func (s *Store) GetTimeline(id string) (*model.Timeline, error) {
 
 func (s *Store) ListTimelines(characterID string) ([]model.Timeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, character_id, title, current_version_id, created_at, updated_at FROM timelines WHERE character_id = ? ORDER BY updated_at DESC`,
+		`SELECT id, character_id, title, current_version_id, COALESCE(world_line_json,''), created_at, updated_at
+		 FROM timelines
+		 WHERE character_id = ?
+		 ORDER BY updated_at DESC`,
 		characterID,
 	)
 	if err != nil {
@@ -57,11 +60,13 @@ func (s *Store) ListTimelines(characterID string) ([]model.Timeline, error) {
 	for rows.Next() {
 		var t model.Timeline
 		var created, updated string
-		if err := rows.Scan(&t.ID, &t.CharacterID, &t.Title, &t.CurrentVersionID, &created, &updated); err != nil {
+		var worldLineJSON sql.NullString
+		if err := rows.Scan(&t.ID, &t.CharacterID, &t.Title, &t.CurrentVersionID, &worldLineJSON, &created, &updated); err != nil {
 			return nil, err
 		}
 		t.CreatedAt = parseDBTime(created)
 		t.UpdatedAt = parseDBTime(updated)
+		scanTimelineWorldLine(&t, worldLineJSON)
 		if t.CurrentVersionID != "" {
 			n, _ := s.CountNodesByVersion(t.CurrentVersionID)
 			t.NodeCount = n

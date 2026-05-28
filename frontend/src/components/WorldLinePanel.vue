@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, toRaw, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { AIModelId, LifeNode, WorldLine, WorldLineEvent } from '@/api/client'
 import { api } from '@/api/client'
@@ -26,11 +26,28 @@ const saving = ref(false)
 const model = ref<AIModelId>(DEFAULT_CASCADE_MODEL)
 const draft = ref<WorldLine | null>(null)
 
+function cloneWorldLine<T>(v: T): T {
+  // 防御性拷贝：
+  // - structuredClone 在部分浏览器/环境会对 Vue Proxy 抛 DataCloneError
+  // - iOS Safari 13 可能没有 structuredClone
+  // 因 worldLine 是纯 JSON 数据，这里统一兜底为 JSON clone。
+  const raw = toRaw(v) as T
+  const sc = (globalThis as unknown as { structuredClone?: (x: T) => T }).structuredClone
+  if (typeof sc === 'function') {
+    try {
+      return sc(raw)
+    } catch {
+      // fall through
+    }
+  }
+  return JSON.parse(JSON.stringify(raw)) as T
+}
+
 watch(
   () => props.worldLine,
   (wl) => {
     if (!editing.value) {
-      draft.value = wl ? structuredClone(wl) : null
+      draft.value = wl ? cloneWorldLine(wl) : null
     }
   },
   { immediate: true, deep: true }
@@ -55,12 +72,12 @@ const yearRange = computed(() => {
 
 function startEdit() {
   if (!props.worldLine) return
-  draft.value = structuredClone(props.worldLine)
+  draft.value = cloneWorldLine(props.worldLine)
   editing.value = true
 }
 
 function cancelEdit() {
-  draft.value = props.worldLine ? structuredClone(props.worldLine) : null
+  draft.value = props.worldLine ? cloneWorldLine(props.worldLine) : null
   editing.value = false
 }
 
@@ -79,7 +96,7 @@ async function save(applyToNodes: boolean) {
       apply_to_nodes: applyToNodes,
     })
     emit('updated', res.world_line)
-    draft.value = structuredClone(res.world_line)
+    draft.value = cloneWorldLine(res.world_line)
     editing.value = false
     if (res.job?.id) {
       emit('applyJob', res.job.id)

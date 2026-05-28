@@ -1,14 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { api, type SavedLightNovelMeta, pollJob } from '@/api/client'
+import { api, type SavedLightNovelMeta } from '@/api/client'
 import type { AIModelId, BranchNode, LifeNode, Timeline, WorldLine } from '@/api/client'
 import { useLayoutStore } from '@/stores/layout'
 import { DEFAULT_AI_MODEL, DEFAULT_CASCADE_MODEL, modelDisplayLabel } from '@/constants/models'
 import TimelineAxis from '@/components/TimelineAxis.vue'
-import WorldLinePanel from '@/components/WorldLinePanel.vue'
 import NodeEditor from '@/components/NodeEditor.vue'
 import BranchFlowchart from '@/components/BranchFlowchart.vue'
 import ProfilePanel from '@/components/ProfilePanel.vue'
@@ -50,6 +49,63 @@ const pageLoading = ref(false)
 const showProfile = ref(false)
 const detailPanelOpen = ref(false)
 const mobileTab = ref<'nodes' | 'detail' | 'branch'>('nodes')
+const mobileDetailNavBusy = computed(() => pageLoading.value || jobBusy.value)
+
+const selectedIndex = computed(() => {
+  if (!selectedNode.value) return -1
+  return nodes.value.findIndex((n) => n.id === selectedNode.value?.id)
+})
+const hasPrevNode = computed(() => selectedIndex.value > 0)
+const hasNextNode = computed(() => selectedIndex.value >= 0 && selectedIndex.value < nodes.value.length - 1)
+
+const worldLineIntroSnippet = computed(() => {
+  const wl = worldLine.value
+  if (!wl) return ''
+  const parts = [wl.historical_trend, wl.era_summary, wl.daily_life_context]
+    .filter((s): s is string => typeof s === 'string' && !!s.trim())
+    .map((s) => s.trim())
+  const text = parts.join(' ')
+  if (!text) return ''
+  return text.length > 32 ? `${text.slice(0, 32)}…` : text
+})
+
+async function scrollToSelectedNode() {
+  await nextTick()
+  const id = selectedNode.value?.id
+  if (!id) return
+  const el = document.getElementById(`node-${id}`)
+  if (el && typeof el.scrollIntoView === 'function') {
+    el.scrollIntoView({ block: 'center' })
+  }
+}
+
+function scrollDetailToTop() {
+  // 详情页切换节点时，回到顶部便于从头阅读
+  try {
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  } catch {
+    window.scrollTo(0, 0)
+  }
+}
+
+function mobilePrevNode() {
+  const idx = selectedIndex.value
+  if (idx <= 0) return
+  selectedNode.value = nodes.value[idx - 1]
+  scrollDetailToTop()
+}
+
+function mobileNextNode() {
+  const idx = selectedIndex.value
+  if (idx < 0 || idx >= nodes.value.length - 1) return
+  selectedNode.value = nodes.value[idx + 1]
+  scrollDetailToTop()
+}
+
+async function mobileBackToList() {
+  mobileTab.value = 'nodes'
+  await scrollToSelectedNode()
+}
 
 const dialogueRef = ref<InstanceType<typeof CharacterDialogueDialog> | null>(null)
 
@@ -403,31 +459,6 @@ async function copyExport() {
   }
 }
 
-async function onWorldLineApplyJob(jobId: string) {
-  jobTitle.value = '世界线同步'
-  jobVisible.value = true
-  jobFailed.value = false
-  jobErrorText.value = ''
-  jobProgress.value = 10
-  jobStatusText.value = '正在同步人生节点…'
-  try {
-    const done = await pollJob(jobId, (j) => {
-      jobProgress.value = Math.max(j.progress, 5)
-      if (j.stage_text) jobStatusText.value = j.stage_text
-    })
-    if (done.status === 'failed') throw new Error(done.error || '任务失败')
-    jobProgress.value = 100
-    jobStatusText.value = '完成'
-    await load()
-    ElMessage.success('世界线已同步到人生节点')
-    setTimeout(clearJobState, 1500)
-  } catch (e: unknown) {
-    jobFailed.value = true
-    jobErrorText.value = e instanceof Error ? e.message : '任务失败'
-    jobStatusText.value = '任务失败'
-  }
-}
-
 async function refreshWorldLine() {
   if (!selectedTimelineId.value || !nodes.value.length) {
     ElMessage.warning('当前时间轴尚无节点')
@@ -452,13 +483,6 @@ async function refreshWorldLine() {
   })
   if (!ok && !jobFailed.value) {
     ElMessage.error('刷新世界线失败')
-  }
-}
-
-function onWorldLineUpdated(wl: WorldLine) {
-  worldLine.value = wl
-  if (currentTimeline.value) {
-    currentTimeline.value = { ...currentTimeline.value, world_line: wl }
   }
 }
 
@@ -528,11 +552,20 @@ watch(
   }
 )
 
+watch(
+  () => mobileTab.value,
+  (tab) => {
+    if (!layout.isMobile) return
+    if (tab === 'nodes') void scrollToSelectedNode()
+  }
+)
+
 function onSelect(node: LifeNode) {
   selectedNode.value = node
   if (layout.isMobile) {
     mobileTab.value = 'detail'
     detailPanelOpen.value = false
+    // 进入详情不强制跳到页面顶部：保持当前位置
     return
   }
   detailPanelOpen.value = true
@@ -818,25 +851,47 @@ onMounted(async () => {
       <el-tabs v-model="mobileTab" stretch>
         <el-tab-pane label="节点" name="nodes">
           <div v-loading="pageLoading" class="page-card timeline-dual">
-            <WorldLinePanel
-              class="track-world"
-              :character-id="charId"
-              :timeline-id="selectedTimelineId"
-              :world-line="worldLine"
-              :nodes="nodes"
-              :loading="pageLoading || jobBusy"
-              :refreshing="jobBusy"
-              @updated="onWorldLineUpdated"
-              @apply-job="onWorldLineApplyJob"
-              @refresh="refreshWorldLine"
-            />
             <div class="track-life">
               <header class="track-life-head">
                 <h3>人生节点</h3>
                 <span v-if="nodes.length" class="track-life-meta">{{ nodes.length }} 个节点</span>
               </header>
+              <div v-if="worldLine" class="worldline-intro">
+                <el-collapse accordion>
+                  <el-collapse-item name="intro">
+                    <template #title>
+                      <div class="worldline-intro-title">
+                        <span>世界线简介</span>
+                        <span v-if="worldLineIntroSnippet" class="worldline-intro-snippet">
+                          {{ worldLineIntroSnippet }}
+                        </span>
+                        <el-button
+                          size="small"
+                          type="primary"
+                          :disabled="jobBusy || pageLoading"
+                          @click.stop="refreshWorldLine"
+                        >
+                          刷新世界线
+                        </el-button>
+                      </div>
+                    </template>
+                    <div class="worldline-intro-body">
+                      <p v-if="worldLine.historical_trend" class="worldline-intro-p">
+                        <strong>历史趋势：</strong>{{ worldLine.historical_trend }}
+                      </p>
+                      <p v-if="worldLine.era_summary" class="worldline-intro-p">
+                        <strong>时代概览：</strong>{{ worldLine.era_summary }}
+                      </p>
+                      <p v-if="worldLine.daily_life_context" class="worldline-intro-p">
+                        <strong>日常背景：</strong>{{ worldLine.daily_life_context }}
+                      </p>
+                    </div>
+                  </el-collapse-item>
+                </el-collapse>
+              </div>
               <TimelineAxis
                 :nodes="nodes"
+                :world-line="worldLine"
                 :selected-id="selectedNode?.id"
                 :profile="profile"
                 :append-disabled="true"
@@ -848,7 +903,10 @@ onMounted(async () => {
         </el-tab-pane>
 
         <el-tab-pane label="详情" name="detail">
-          <div class="page-card">
+          <div class="page-card mobile-detail-card">
+            <div v-if="selectedNode" class="mobile-detail-topbar">
+              <el-button size="small" @click="mobileBackToList">返回列表</el-button>
+            </div>
             <el-empty v-if="!selectedNode" description="请选择一个节点查看详情" />
             <NodeEditor
               v-else
@@ -860,6 +918,26 @@ onMounted(async () => {
               @narrative="(kind, model) => selectedNode && openNodeNarrative(charId, selectedNode, kind, model)"
               @dialogue="onOpenDialogue"
             />
+            <button
+              v-if="selectedNode"
+              type="button"
+              class="mobile-detail-arrow mobile-detail-arrow--left"
+              :disabled="mobileDetailNavBusy || !hasPrevNode"
+              aria-label="上一个节点"
+              @click="mobilePrevNode"
+            >
+              ←
+            </button>
+            <button
+              v-if="selectedNode"
+              type="button"
+              class="mobile-detail-arrow mobile-detail-arrow--right"
+              :disabled="mobileDetailNavBusy || !hasNextNode"
+              aria-label="下一个节点"
+              @click="mobileNextNode"
+            >
+              →
+            </button>
           </div>
         </el-tab-pane>
 
@@ -880,25 +958,47 @@ onMounted(async () => {
     <div v-else class="timeline-layout" :class="{ 'detail-collapsed': !detailPanelOpen }">
       <section class="col-timeline">
         <div v-loading="pageLoading" class="page-card timeline-dual">
-          <WorldLinePanel
-            class="track-world"
-            :character-id="charId"
-            :timeline-id="selectedTimelineId"
-            :world-line="worldLine"
-            :nodes="nodes"
-            :loading="pageLoading || jobBusy"
-            :refreshing="jobBusy"
-            @updated="onWorldLineUpdated"
-            @apply-job="onWorldLineApplyJob"
-            @refresh="refreshWorldLine"
-          />
           <div class="track-life">
             <header class="track-life-head">
               <h3>人生节点</h3>
               <span v-if="nodes.length" class="track-life-meta">{{ nodes.length }} 个节点</span>
             </header>
+            <div v-if="worldLine" class="worldline-intro">
+              <el-collapse accordion>
+                <el-collapse-item name="intro">
+                  <template #title>
+                    <div class="worldline-intro-title">
+                      <span>世界线简介</span>
+                      <span v-if="worldLineIntroSnippet" class="worldline-intro-snippet">
+                        {{ worldLineIntroSnippet }}
+                      </span>
+                      <el-button
+                        size="small"
+                        type="primary"
+                        :disabled="jobBusy || pageLoading"
+                        @click.stop="refreshWorldLine"
+                      >
+                        刷新世界线
+                      </el-button>
+                    </div>
+                  </template>
+                  <div class="worldline-intro-body">
+                    <p v-if="worldLine.historical_trend" class="worldline-intro-p">
+                      <strong>历史趋势：</strong>{{ worldLine.historical_trend }}
+                    </p>
+                    <p v-if="worldLine.era_summary" class="worldline-intro-p">
+                      <strong>时代概览：</strong>{{ worldLine.era_summary }}
+                    </p>
+                    <p v-if="worldLine.daily_life_context" class="worldline-intro-p">
+                      <strong>日常背景：</strong>{{ worldLine.daily_life_context }}
+                    </p>
+                  </div>
+                </el-collapse-item>
+              </el-collapse>
+            </div>
             <TimelineAxis
               :nodes="nodes"
+              :world-line="worldLine"
               :selected-id="selectedNode?.id"
               :profile="profile"
               :append-disabled="appendNextDisabled"
@@ -1231,6 +1331,57 @@ onMounted(async () => {
   gap: 8px;
   flex-wrap: wrap;
 }
+
+.mobile-detail-card {
+  position: relative;
+  padding-bottom: calc(var(--layout-bottom-nav-h) + 12px);
+}
+
+.mobile-detail-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: flex-start;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  background: #fff;
+  border-bottom: 1px solid #ebeef5;
+}
+
+.mobile-detail-arrow {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 40;
+  width: 46px;
+  height: 46px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.55);
+  color: #111827;
+  font-size: 22px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+  backdrop-filter: blur(6px);
+}
+
+.mobile-detail-arrow--left {
+  left: 10px;
+}
+
+.mobile-detail-arrow--right {
+  right: 10px;
+}
+
+.mobile-detail-arrow:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+
 .export-hint {
   margin: 0 0 12px;
   font-size: 0.85rem;
@@ -1264,14 +1415,7 @@ onMounted(async () => {
 }
 
 .timeline-dual {
-  display: grid;
-  grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
-  gap: 0;
   padding: 0;
-}
-
-.track-world {
-  min-width: 0;
 }
 
 .track-life {
@@ -1388,26 +1532,44 @@ onMounted(async () => {
   .col-dock-side .dock-panel {
     max-height: 40vh;
   }
-  .col-timeline .timeline-dual {
-    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
-  }
   .track-life {
     padding: 0 16px 20px;
   }
 }
 
 @media (max-width: 960px) {
-  .timeline-dual {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto auto;
-  }
-  .track-world {
-    border-right: none;
-    border-bottom: 1px solid #e4e7ed;
-  }
   .track-life {
     padding: 0 12px 20px;
   }
+}
+
+.worldline-intro {
+  margin: 12px 0 10px;
+}
+.worldline-intro-title {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.worldline-intro-snippet {
+  flex: 1;
+  min-width: 0;
+  color: #909399;
+  font-size: 0.82rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.worldline-intro-body {
+  padding: 6px 0 2px;
+}
+.worldline-intro-p {
+  margin: 0 0 10px;
+  color: #303133;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
 @media (max-width: 900px) {
