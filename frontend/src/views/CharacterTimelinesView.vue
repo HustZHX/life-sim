@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api, type Character, type Profile, type Timeline } from '@/api/client'
 import { formatDateTime, modeLabel, statusLabel } from '@/constants/characterLabels'
+import { useLayoutStore } from '@/stores/layout'
 import {
   isTimelineGenerating,
   isTimelineReady,
@@ -15,6 +16,7 @@ import {
 const route = useRoute()
 const router = useRouter()
 const charId = route.params.id as string
+const layout = useLayoutStore()
 
 const character = ref<Character | null>(null)
 const profile = ref<Profile | null>(null)
@@ -36,7 +38,7 @@ async function load(silent = false) {
     ])
     character.value = ch
     profile.value = prof
-    timelines.value = tlRes.timelines
+    timelines.value = Array.isArray(tlRes.timelines) ? tlRes.timelines : []
     if (activeJobCount.value > 0) {
       startPollIfNeeded()
     } else {
@@ -185,13 +187,59 @@ onUnmounted(stopPoll)
         <el-button type="primary" @click="createTimeline">生成第一条时间轴</el-button>
       </el-empty>
 
-      <el-table
-        v-else
-        :data="timelines"
-        stripe
-        style="width: 100%"
-        @row-click="openTimeline"
-      >
+      <div v-else-if="layout.isMobile" class="mobile-cards">
+        <button
+          v-for="row in timelines"
+          :key="row.id"
+          type="button"
+          class="mobile-card"
+          @click="openTimeline(row)"
+        >
+          <div class="card-head">
+            <div class="card-title">{{ row.title || '未命名时间轴' }}</div>
+            <el-tag size="small" :type="statusTagType(row)" effect="plain">
+              {{ timelineGenerationLabel(row.generation_status) }}
+            </el-tag>
+          </div>
+
+          <div v-if="isTimelineGenerating(row)" class="job-cell card-job">
+            <el-progress
+              :percentage="Math.max(row.active_job?.progress ?? 8, 5)"
+              :stroke-width="6"
+              striped
+              striped-flow
+            />
+            <span class="job-status">{{ jobStatusText(row) }}</span>
+          </div>
+          <p v-if="row.generation_status === 'failed' && row.generation_error" class="fail-hint">
+            {{ row.generation_error }}
+          </p>
+
+          <div class="card-meta">
+            <span class="meta-item">节点 {{ row.node_count ?? '—' }}</span>
+            <span class="meta-item">版本 {{ versionChangeLabel(row.version_count) }}</span>
+          </div>
+
+          <div class="card-foot">
+            <span class="time-text">{{ formatDateTime(row.updated_at) }}</span>
+            <div class="card-actions">
+              <el-button
+                v-if="row.generation_status === 'failed'"
+                type="warning"
+                link
+                @click.stop="retryTimelineGeneration(row, $event)"
+              >
+                重试
+              </el-button>
+              <el-button type="primary" link :disabled="!isTimelineReady(row)" @click.stop="openTimeline(row)">
+                查看
+              </el-button>
+            </div>
+          </div>
+        </button>
+      </div>
+
+      <el-table v-else :data="timelines" stripe style="width: 100%" @row-click="openTimeline">
         <el-table-column label="名称" min-width="200" prop="title" />
         <el-table-column label="节点数" width="80" align="center">
           <template #default="{ row }">
@@ -242,12 +290,7 @@ onUnmounted(stopPoll)
             >
               重试
             </el-button>
-            <el-button
-              type="primary"
-              link
-              :disabled="!isTimelineReady(row)"
-              @click.stop="openTimeline(row)"
-            >
+            <el-button type="primary" link :disabled="!isTimelineReady(row)" @click.stop="openTimeline(row)">
               查看
             </el-button>
           </template>
@@ -323,5 +366,68 @@ onUnmounted(stopPoll)
 }
 :deep(.el-table__row) {
   cursor: pointer;
+}
+
+.mobile-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mobile-card {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #ebeef5;
+  border-radius: 12px;
+  background: #fff;
+  padding: 14px 14px 12px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.04);
+}
+.card-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+.card-title {
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: #16213e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-meta {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #606266;
+  font-size: 0.9rem;
+}
+.meta-item {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f5f7fa;
+}
+.card-job {
+  margin-top: 10px;
+}
+.card-foot {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.time-text {
+  color: #909399;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
 }
 </style>
