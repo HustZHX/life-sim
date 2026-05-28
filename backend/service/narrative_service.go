@@ -32,6 +32,42 @@ func (s *NarrativeService) GetSavedLightNovel(id string) (*model.SavedLightNovel
 	return store.GetLightNovelFile(dir, id)
 }
 
+func (s *NarrativeService) lookupNarrativeCache(characterID string, q model.NarrativeArtifactQuery, contentKey string) (*model.NarrativeArtifact, error) {
+	if cached, err := s.store.GetNarrativeArtifact(q); err == nil {
+		if cached.CharacterID == characterID {
+			return cached, nil
+		}
+		return nil, fmt.Errorf("缓存不属于该角色")
+	}
+	if contentKey == "" {
+		return nil, fmt.Errorf("未找到缓存")
+	}
+	cached, err := s.store.GetNarrativeArtifactByContentKey(contentKey, q.Kind)
+	if err != nil {
+		return nil, err
+	}
+	if cached.CharacterID != characterID {
+		return nil, fmt.Errorf("缓存不属于该角色")
+	}
+	return cached, nil
+}
+
+func (s *NarrativeService) withVersionID(artifact *model.NarrativeArtifact, versionID string) *model.NarrativeArtifact {
+	if artifact == nil || versionID == "" || artifact.VersionID == versionID {
+		return artifact
+	}
+	copy := *artifact
+	copy.VersionID = versionID
+	return &copy
+}
+
+func (s *NarrativeService) purgeNarrativeCache(q model.NarrativeArtifactQuery, contentKey string) {
+	_ = s.store.DeleteNarrativeArtifact(q)
+	if contentKey != "" {
+		_ = s.store.DeleteNarrativeArtifactByContentKey(contentKey, q.Kind)
+	}
+}
+
 func (s *NarrativeService) GetArtifact(characterID string, q model.NarrativeArtifactQuery) (*model.NarrativeArtifact, error) {
 	a, err := s.store.GetNarrativeArtifact(q)
 	if err != nil {
@@ -70,12 +106,13 @@ func (s *NarrativeService) StartLightNovelJob(ctx context.Context, characterID s
 		NodeID: "", FromSequence: req.FromSequence, ToSequence: req.ToSequence,
 		Person: req.Person,
 	}
+	contentKey := store.NarrativeContentKey(q.Kind, nodes, req.Person)
 	if !req.Force {
-		if cached, err := s.store.GetNarrativeArtifact(q); err == nil {
-			return nil, cached, nil
+		if cached, err := s.lookupNarrativeCache(characterID, q, contentKey); err == nil {
+			return nil, s.withVersionID(cached, req.VersionID), nil
 		}
 	} else {
-		_ = s.store.DeleteNarrativeArtifact(q)
+		s.purgeNarrativeCache(q, contentKey)
 	}
 
 	modelID := ai.NormalizeModelID(req.Model)
@@ -121,12 +158,13 @@ func (s *NarrativeService) StartNodeNarrativeJob(ctx context.Context, characterI
 	q := model.NarrativeArtifactQuery{
 		VersionID: node.VersionID, Kind: kind, NodeID: nodeID,
 	}
+	contentKey := store.NarrativeContentKey(kind, []model.LifeNode{*node}, "")
 	if !req.Force {
-		if cached, err := s.store.GetNarrativeArtifact(q); err == nil {
+		if cached, err := s.lookupNarrativeCache(characterID, q, contentKey); err == nil {
 			return nil, cached, nil
 		}
 	} else {
-		_ = s.store.DeleteNarrativeArtifact(q)
+		s.purgeNarrativeCache(q, contentKey)
 	}
 
 	modelID := ai.NormalizeModelID(req.Model)
@@ -135,7 +173,12 @@ func (s *NarrativeService) StartNodeNarrativeJob(ctx context.Context, characterI
 	}
 
 	jobType := "narrative_" + kind
-	job, err := s.store.CreateJob(characterID, jobType, modelID)
+	reqJSON, _ := json.Marshal(model.NodeNarrativeJobRequest{
+		NodeID:  nodeID,
+		Kind:    kind,
+		Request: req,
+	})
+	job, err := s.store.CreateJobWithRequest(characterID, jobType, modelID, string(reqJSON))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -235,10 +278,11 @@ func (s *NarrativeService) runLightNovelJob(ctx context.Context, jobID, characte
 	}
 
 	content := strings.Join(parts, "\n\n---\n\n")
+	contentKey := store.NarrativeContentKey(q.Kind, nodes, req.Person)
 	artifact := &model.NarrativeArtifact{
 		CharacterID: characterID, VersionID: q.VersionID, Kind: q.Kind,
 		FromSequence: q.FromSequence, ToSequence: q.ToSequence, Person: req.Person,
-		Content: content, Model: job.Model,
+		ContentKey: contentKey, Content: content, Model: job.Model,
 	}
 	if err := s.store.SaveNarrativeArtifact(artifact); err != nil {
 		s.failNarrativeJob(job, err.Error())
@@ -332,7 +376,8 @@ func (s *NarrativeService) runNodeNarrativeJob(ctx context.Context, jobID, chara
 
 	artifact := &model.NarrativeArtifact{
 		CharacterID: characterID, VersionID: q.VersionID, NodeID: q.NodeID,
-		Kind: kind, Content: content, Model: job.Model,
+		Kind: kind, ContentKey: store.NarrativeContentKey(kind, []model.LifeNode{node}, ""),
+		Content: content, Model: job.Model,
 	}
 	if err := s.store.SaveNarrativeArtifact(artifact); err != nil {
 		s.failNarrativeJob(job, err.Error())

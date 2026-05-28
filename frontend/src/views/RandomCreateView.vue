@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api, type Profile, type TimelineConfig } from '@/api/client'
-import { DEFAULT_TARGET_NODE_COUNT, effectiveDeathYear } from '@/utils/timelineDensity'
+import { DEFAULT_TARGET_NODE_COUNT, effectiveDeathYear, isLivingProfile } from '@/utils/timelineDensity'
 import { DEFAULT_AI_MODEL, type AIModelId } from '@/constants/models'
 import { useTimelineGenerate } from '@/composables/useTimelineGenerate'
 import { DEFAULT_RANDOM_NAME } from '@/utils/randomNames'
@@ -27,7 +27,7 @@ const profileModel = ref<AIModelId>(DEFAULT_AI_MODEL)
 const timelineModel = ref<AIModelId>(DEFAULT_AI_MODEL)
 const timelineConfig = ref<TimelineConfig>({ target_node_count: DEFAULT_TARGET_NODE_COUNT, start_year: 0, end_year: 0 })
 
-const { jobRunning, progress, statusText, confirmAndGenerate } = useTimelineGenerate()
+const { jobRunning, progress, statusText, failed, errorText, retrying, retry, clearJobState, confirmAndGenerate } = useTimelineGenerate()
 
 async function suggestNames() {
   nameLoading.value = true
@@ -68,8 +68,8 @@ async function generateProfile() {
     })
     timelineConfig.value = {
       target_node_count: DEFAULT_TARGET_NODE_COUNT,
-      start_year: profile.value.birth_year,
-      end_year: effectiveDeathYear(profile.value),
+      start_year: isLivingProfile(profile.value) ? 0 : profile.value.birth_year,
+      end_year: isLivingProfile(profile.value) ? 0 : effectiveDeathYear(profile.value),
     }
     step.value = 2
     ElMessage.success('人物档案已生成，可编辑或单独随机各字段')
@@ -84,8 +84,8 @@ function onProfileUpdate(p: Profile) {
   profile.value = p
   timelineConfig.value = {
     ...timelineConfig.value,
-    start_year: p.birth_year,
-    end_year: effectiveDeathYear(p),
+    start_year: isLivingProfile(p) ? 0 : p.birth_year,
+    end_year: isLivingProfile(p) ? 0 : effectiveDeathYear(p),
   }
 }
 
@@ -94,6 +94,7 @@ async function onGenerateClick() {
   const result = await confirmAndGenerate(characterId.value, timelineModel.value, {
     displayName: profile.value.display_name,
     config: timelineConfig.value,
+    profile: profile.value,
     background: true,
   })
   if (result.ok) {
@@ -109,6 +110,11 @@ async function onGenerateClick() {
       :progress="progress"
       :status-text="statusText"
       title="时间轴生成中"
+      :failed="failed"
+      :error-text="errorText"
+      :retrying="retrying"
+      @retry="retry()"
+      @dismiss="clearJobState()"
     />
 
     <el-steps :active="step - 1" finish-status="success" align-center style="margin-bottom: 24px">
@@ -188,6 +194,14 @@ async function onGenerateClick() {
       <el-divider />
 
       <h3 class="sub-title">生成人生时间轴</h3>
+      <el-alert
+        v-if="isLivingProfile(profile)"
+        title="人生未完结：仅选择推演节点数即可；经历与职业会在时间轴与后续推演中逐步填写。"
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 12px"
+      />
       <ModelSelector v-model="timelineModel" />
       <TimelineConfigPanel
         v-model="timelineConfig"

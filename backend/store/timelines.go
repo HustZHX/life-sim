@@ -26,15 +26,17 @@ func (s *Store) CreateTimeline(t *model.Timeline) error {
 
 func (s *Store) GetTimeline(id string) (*model.Timeline, error) {
 	row := s.db.QueryRow(
-		`SELECT id, character_id, title, current_version_id, created_at, updated_at FROM timelines WHERE id = ?`, id,
+		`SELECT id, character_id, title, current_version_id, COALESCE(world_line_json,''), created_at, updated_at FROM timelines WHERE id = ?`, id,
 	)
 	var t model.Timeline
 	var created, updated string
-	if err := row.Scan(&t.ID, &t.CharacterID, &t.Title, &t.CurrentVersionID, &created, &updated); err != nil {
+	var worldLineJSON sql.NullString
+	if err := row.Scan(&t.ID, &t.CharacterID, &t.Title, &t.CurrentVersionID, &worldLineJSON, &created, &updated); err != nil {
 		return nil, err
 	}
 	t.CreatedAt = parseDBTime(created)
 	t.UpdatedAt = parseDBTime(updated)
+	scanTimelineWorldLine(&t, worldLineJSON)
 	if t.CurrentVersionID != "" {
 		n, _ := s.CountNodesByVersion(t.CurrentVersionID)
 		t.NodeCount = n
@@ -80,7 +82,7 @@ func (s *Store) ListActiveTimelineJobs(characterID string) ([]model.Job, error) 
 		`SELECT id, character_id, type, status, progress, COALESCE(stage_text,''), COALESCE(model,''), COALESCE(request_json,''), result_json, error, created_at, updated_at
 		 FROM jobs
 		 WHERE character_id=? AND status IN (?, ?)
-		   AND type IN ('timeline_generate','timeline_regenerate','node_inner_current','node_inner_subsequent','timeline_narrative_change')
+		   AND type IN ('timeline_generate','timeline_regenerate','node_inner_current','node_inner_subsequent','timeline_narrative_change','world_line_sync','world_line_refresh')
 		 ORDER BY created_at DESC`,
 		characterID, model.JobPending, model.JobRunning,
 	)

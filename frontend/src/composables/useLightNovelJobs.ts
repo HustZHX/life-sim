@@ -210,6 +210,19 @@ export function useLightNovelJobs(characterId: string) {
     }
   }
 
+  async function retryJob(entry: LightNovelJobEntry) {
+    listVisible.value = true
+    try {
+      const job = await api.retryJob(entry.id)
+      upsertEntry(jobToEntry(job))
+      ensurePoll(job.id)
+      startBackgroundPoll()
+      ElMessage.success('已重新提交生成')
+    } catch (e: unknown) {
+      ElMessage.error(e instanceof Error ? e.message : '重试失败')
+    }
+  }
+
   function statusLabel(entry: LightNovelJobEntry): string {
     if (entry.status === 'completed') return '已完成'
     if (entry.status === 'failed') return '失败'
@@ -235,6 +248,7 @@ export function useLightNovelJobs(characterId: string) {
     activeCount,
     refreshList,
     submit,
+    retryJob,
     statusLabel,
     entryTitle,
     startBackgroundPoll,

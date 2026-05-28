@@ -4,6 +4,8 @@ export type TimelineJobType =
   | 'node_inner_current'
   | 'node_inner_subsequent'
   | 'timeline_narrative_change'
+  | 'world_line_sync'
+  | 'world_line_refresh'
 
 export interface TimelineActiveJob {
   id: string
@@ -19,6 +21,8 @@ const TIMELINE_JOB_LABELS: Record<string, string> = {
   node_inner_current: '更新节点',
   node_inner_subsequent: '推演内心',
   timeline_narrative_change: '叙述变更',
+  world_line_sync: '世界线同步',
+  world_line_refresh: '刷新世界线',
 }
 
 export function timelineJobLabel(type: string): string {

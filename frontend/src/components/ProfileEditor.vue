@@ -6,7 +6,7 @@ import { api, type Profile } from '@/api/client'
 import type { AIModelId } from '@/constants/models'
 import { DEFAULT_AI_MODEL } from '@/constants/models'
 import { PROFILE_FIELDS, cloneProfile, type ProfileFieldKey } from '@/constants/profileFields'
-import { formatProfileLifeSpan } from '@/utils/timelineDensity'
+import { formatProfileLifeSpan, isLivingProfile } from '@/utils/timelineDensity'
 
 const props = withDefaults(
   defineProps<{
@@ -41,9 +41,36 @@ function fieldValue(key: ProfileFieldKey): string | number {
 function setField(key: ProfileFieldKey, val: string | number | undefined) {
   if (key === 'birth_year' || key === 'death_year') {
     local.value[key] = typeof val === 'number' ? val : Number(val) || 0
+    if (key === 'death_year' && isLivingProfile(local.value)) {
+      local.value.experiences = ''
+      local.value.occupation = ''
+      local.value.death_cause = ''
+    }
   } else {
     ;(local.value as unknown as Record<string, string>)[key] = String(val ?? '')
   }
+}
+
+function deathYearDisplay(): number | undefined {
+  return isLivingProfile(local.value) ? undefined : local.value.death_year || undefined
+}
+
+function onDeathYearChange(v: number | undefined) {
+  if (v == null || v <= 0) {
+    local.value.death_year = 0
+    local.value.experiences = ''
+    local.value.occupation = ''
+    local.value.death_cause = ''
+    return
+  }
+  local.value.death_year = v
+}
+
+function markLivingProfile() {
+  local.value.death_year = 0
+  local.value.experiences = ''
+  local.value.occupation = ''
+  local.value.death_cause = ''
 }
 
 async function saveProfile() {
@@ -92,7 +119,50 @@ async function randomizeField(key: ProfileFieldKey) {
     </el-descriptions>
 
     <el-form v-if="editable" label-width="96px" class="field-form">
-      <el-form-item v-for="f in PROFILE_FIELDS" :key="f.key" :label="f.label">
+      <el-form-item label="姓名">
+        <div class="field-row">
+          <el-input
+            :model-value="String(local.display_name ?? '')"
+            @update:model-value="(v: string) => setField('display_name', v)"
+          />
+          <el-button
+            :icon="RefreshRight"
+            :loading="randomizingField === 'display_name'"
+            title="AI 随机此字段"
+            @click="randomizeField('display_name')"
+          />
+        </div>
+      </el-form-item>
+      <el-form-item label="出生年">
+        <div class="field-row">
+          <el-input-number
+            :model-value="local.birth_year || undefined"
+            :controls="true"
+            style="width: 160px"
+            @update:model-value="(v: number | undefined) => setField('birth_year', v ?? 0)"
+          />
+        </div>
+      </el-form-item>
+      <el-form-item label="卒年">
+        <div class="death-year-block">
+          <div class="field-row">
+            <el-input-number
+              :model-value="deathYearDisplay()"
+              :controls="true"
+              :disabled="isLivingProfile(local)"
+              placeholder="未完结"
+              style="width: 160px"
+              @update:model-value="onDeathYearChange"
+            />
+            <el-button v-if="isLivingProfile(local)" plain @click="local.death_year = local.birth_year + 60">
+              填写卒年
+            </el-button>
+            <el-button v-else plain @click="markLivingProfile">人生未完结</el-button>
+          </div>
+          <p class="field-hint">留空表示人生未完结；此时经历、职业留待剧情推演填写。</p>
+        </div>
+      </el-form-item>
+      <el-form-item v-for="f in PROFILE_FIELDS.filter((x) => x.key !== 'birth_year' && x.key !== 'death_year' && x.key !== 'display_name')" :key="f.key" :label="f.label">
         <div class="field-row">
           <el-input-number
             v-if="f.type === 'number'"
@@ -154,5 +224,14 @@ async function randomizeField(key: ProfileFieldKey) {
 .field-row :deep(.el-input),
 .field-row :deep(.el-textarea) {
   flex: 1;
+}
+.death-year-block {
+  width: 100%;
+}
+.field-hint {
+  margin: 6px 0 0;
+  font-size: 0.82rem;
+  color: #909399;
+  line-height: 1.45;
 }
 </style>

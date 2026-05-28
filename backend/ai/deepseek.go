@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -54,7 +55,13 @@ type chatResponse struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens          int `json:"prompt_tokens"`
+		PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+		PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
@@ -78,7 +85,7 @@ func (c *Client) ChatJSON(ctx context.Context, model, systemPrompt, userContent 
 			model = c.cfg.ModelFast
 		}
 	}
-	return c.chatJSONWithModel(ctx, model, systemPrompt, userContent)
+	return c.chatJSONWithModel(ctx, model, systemPrompt, userContent, 8192)
 }
 
 // ChatJSONModel 使用指定 API 模型 ID（deepseek-v4-flash / deepseek-v4-pro）。
@@ -86,7 +93,15 @@ func (c *Client) ChatJSONModel(ctx context.Context, apiModel, systemPrompt, user
 	if apiModel == "" {
 		apiModel = c.cfg.ModelFast
 	}
-	return c.chatJSONWithModel(ctx, apiModel, systemPrompt, userContent)
+	return c.chatJSONWithModel(ctx, apiModel, systemPrompt, userContent, 8192)
+}
+
+// ChatJSONModelLong 用于推演余生等长 JSON 输出，提高 max_tokens 降低截断概率。
+func (c *Client) ChatJSONModelLong(ctx context.Context, apiModel, systemPrompt, userContent string) (string, error) {
+	if apiModel == "" {
+		apiModel = c.cfg.ModelFast
+	}
+	return c.chatJSONWithModel(ctx, apiModel, systemPrompt, userContent, 16384)
 }
 
 // ChatTextModel 自然语言多轮对话（非 JSON 格式）。
@@ -113,20 +128,27 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
-func (c *Client) chatJSONWithModel(ctx context.Context, model, systemPrompt, userContent string) (string, error) {
+func (c *Client) chatJSONWithModel(ctx context.Context, model, systemPrompt, userContent string, maxTokens int) (string, error) {
+	if maxTokens <= 0 {
+		maxTokens = 8192
+	}
 	reqBody := chatRequest{
 		Model: model,
 		Messages: []chatMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userContent},
 		},
-		MaxTokens:      8192,
+		MaxTokens:      maxTokens,
 		Temperature:    0.7,
 		ResponseFormat: &responseFormat{Type: "json_object"},
 	}
 	content, err := c.doChatWithRetry(ctx, reqBody)
 	if err != nil {
 		return "", err
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "", fmt.Errorf("DeepSeek: 空内容")
 	}
 	return extractJSON(content), nil
 }
@@ -210,7 +232,16 @@ func (c *Client) doChat(ctx context.Context, reqBody chatRequest) (string, error
 	if len(cr.Choices) == 0 {
 		return "", fmt.Errorf("DeepSeek: 空响应")
 	}
-	return cr.Choices[0].Message.Content, nil
+	choice := cr.Choices[0]
+	if choice.FinishReason == "length" {
+		log.Printf("[deepseek] 警告: 输出可能被截断 finish_reason=length model=%s max_tokens=%d",
+			reqBody.Model, reqBody.MaxTokens)
+	}
+	if cr.Usage.PromptCacheHitTokens > 0 {
+		log.Printf("[deepseek] cache hit=%d miss=%d prompt=%d model=%s",
+			cr.Usage.PromptCacheHitTokens, cr.Usage.PromptCacheMissTokens, cr.Usage.PromptTokens, reqBody.Model)
+	}
+	return choice.Message.Content, nil
 }
 
 func extractJSON(s string) string {

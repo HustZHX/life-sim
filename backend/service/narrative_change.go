@@ -49,7 +49,10 @@ func (s *CharacterService) ApplyNarrativeChange(ctx context.Context, characterID
 		return nil, err
 	}
 
-	jobJSON, _ := json.Marshal(map[string]string{"timeline_id": req.TimelineID})
+	jobJSON, _ := json.Marshal(model.NarrativeChangeJobRequest{
+		TimelineID: req.TimelineID,
+		Request:    req,
+	})
 	job, err := s.store.CreateJobWithRequest(characterID, "timeline_narrative_change", modelID, string(jobJSON))
 	if err != nil {
 		return nil, err

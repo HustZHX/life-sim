@@ -2,14 +2,15 @@ import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   api,
-  pollJob,
   type AIModelId,
+  type Job,
   type LifeNode,
   type NarrativeArtifact,
   type NarrativeCachedResponse,
   type NarrativeKind,
 } from '@/api/client'
 import { DEFAULT_AI_MODEL, modelDisplayLabel } from '@/constants/models'
+import { useJobRunner } from '@/composables/useJobRunner'
 
 export function narrativeKindLabel(kind: NarrativeKind): string {
   switch (kind) {
@@ -63,18 +64,17 @@ export function useNarrativeGenerate() {
   const title = ref('')
   const content = ref('')
   const running = ref(false)
-  const progress = ref(0)
-  const statusText = ref('')
   const context = ref<NarrativeContext | null>(null)
+  const jobRunner = useJobRunner('叙事生成')
 
   function resetProgress() {
-    progress.value = 0
-    statusText.value = ''
+    jobRunner.progress.value = 0
+    jobRunner.statusText.value = ''
   }
 
   function close() {
     visible.value = false
-    if (!running.value) {
+    if (!running.value && !jobRunner.visible.value) {
       content.value = ''
       context.value = null
       resetProgress()
@@ -86,20 +86,6 @@ export function useNarrativeGenerate() {
     title.value = dialogTitle
     content.value = artifact.content
     visible.value = true
-  }
-
-  async function pollNarrativeJob(jobId: string, model: AIModelId): Promise<string> {
-    const done = await pollJob(jobId, (j) => {
-      progress.value = Math.max(j.progress, 5)
-      if (j.status === 'running') {
-        const stage = j.stage_text ? `${j.stage_text} · ` : ''
-        statusText.value = `${stage}${j.progress}% · ${modelDisplayLabel(j.model || model)}`
-      }
-    })
-    if (done.status === 'failed') throw new Error(done.error || '生成失败')
-    progress.value = 100
-    statusText.value = '生成完成'
-    return parseJobContent(done.result)
   }
 
   async function generateNodeNarrative(
@@ -115,29 +101,54 @@ export function useNarrativeGenerate() {
     if (options?.force) content.value = ''
 
     running.value = true
-    progress.value = 5
-    statusText.value = '正在提交任务…'
 
-    try {
-      const res = await api.generateNodeNarrative(ctx.characterId, ctx.nodeId, ctx.kind, {
+    const request = () =>
+      api.generateNodeNarrative(ctx.characterId, ctx.nodeId, ctx.kind, {
         model: ctx.model,
         force: options?.force,
       })
 
-      if (isCachedResponse(res)) {
-        openWithArtifact(res.artifact, ctx, dialogTitle)
+    try {
+      const first = await request()
+      if (isCachedResponse(first)) {
+        openWithArtifact(first.artifact, ctx, dialogTitle)
         if (!options?.force) ElMessage.success('已加载缓存')
         return true
       }
 
-      statusText.value = `AI 正在撰写${kindLabel}`
-      const text = await pollNarrativeJob(res.id, ctx.model)
-      content.value = text
-      ElMessage.success(`${kindLabel}已生成`)
-      return true
+      const initialJob = first as Job
+      const ok = await jobRunner.run({
+        title: '叙事生成',
+        submitLabel: `AI 正在撰写${kindLabel}`,
+        submit: () => Promise.resolve(initialJob),
+        resubmit: async () => {
+          const res = await api.generateNodeNarrative(ctx.characterId, ctx.nodeId, ctx.kind, {
+            model: ctx.model,
+            force: true,
+          })
+          if (isCachedResponse(res)) {
+            openWithArtifact(res.artifact, ctx, dialogTitle)
+            throw new Error('已加载缓存')
+          }
+          return res
+        },
+        onProgress: (j) => {
+          if (j.status === 'running') {
+            const stage = j.stage_text ? `${j.stage_text} · ` : ''
+            jobRunner.statusText.value = `${stage}${j.progress}% · ${modelDisplayLabel(j.model || ctx.model)}`
+          }
+        },
+        afterSuccess: (job) => {
+          content.value = parseJobContent(job.result)
+          ElMessage.success(`${kindLabel}已生成`)
+        },
+      })
+      return ok
     } catch (e: unknown) {
-      ElMessage.error(e instanceof Error ? e.message : '生成失败')
-      if (!content.value) visible.value = false
+      if (!jobRunner.failed.value) {
+        ElMessage.error(e instanceof Error ? e.message : '生成失败')
+        if (!content.value) visible.value = false
+      }
       return false
     } finally {
       running.value = false
@@ -167,17 +178,27 @@ export function useNarrativeGenerate() {
     await generateNodeNarrative(ctx, { force: true })
   }
 
+  async function retryNarrativeJob() {
+    await jobRunner.retry()
+  }
+
   return {
     visible,
     title,
     content,
     running,
-    progress,
-    statusText,
+    progress: jobRunner.progress,
+    statusText: jobRunner.statusText,
+    failed: jobRunner.failed,
+    errorText: jobRunner.errorText,
+    retrying: jobRunner.retrying,
+    jobPanelVisible: jobRunner.visible,
     context,
     close,
     generateNodeNarrative,
     openNodeNarrative,
     regenerate,
+    retryNarrativeJob,
+    clearJobState: jobRunner.clearState,
   }
 }

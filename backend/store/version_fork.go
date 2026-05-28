@@ -19,6 +19,9 @@ func VersionCreatesBranch(v model.TimelineVersion) bool {
 	if strings.Contains(label, "推演后续") {
 		return true
 	}
+	if strings.Contains(label, "世界线") {
+		return true
+	}
 	if strings.Contains(combined, "叙述变更") {
 		return true
 	}

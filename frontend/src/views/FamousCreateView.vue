@@ -24,12 +24,12 @@ const aiModel = ref<AIModelId>(DEFAULT_AI_MODEL)
 const profileModel = ref<AIModelId>(DEFAULT_AI_MODEL)
 const timelineConfig = ref<TimelineConfig>({ target_node_count: DEFAULT_TARGET_NODE_COUNT, start_year: 0, end_year: 0 })
 
-const { jobRunning, progress, statusText, confirmAndGenerate } = useTimelineGenerate()
+const { jobRunning, progress, statusText, failed, errorText, retrying, retry, clearJobState, confirmAndGenerate } = useTimelineGenerate()
 const profileJob = useAwaitProgress('搜寻人物资料')
 const resolveJob = useAwaitProgress('查找候选人')
 
 const progressVisible = computed(
-  () => jobRunning.value || profileJob.visible.value || resolveJob.visible.value
+  () => jobRunning.value || failed.value || profileJob.visible.value || resolveJob.visible.value
 )
 const progressValue = computed(() => {
   if (jobRunning.value) return progress.value
@@ -137,6 +137,11 @@ async function onGenerateClick() {
       :progress="progressValue"
       :status-text="progressStatus"
       :title="progressTitle"
+      :failed="failed"
+      :error-text="errorText"
+      :retrying="retrying"
+      @retry="retry()"
+      @dismiss="clearJobState()"
     />
 
     <el-steps :active="step - 1" finish-status="success" align-center style="margin-bottom: 24px">

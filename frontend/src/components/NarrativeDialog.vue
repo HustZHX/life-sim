@@ -16,6 +16,9 @@ const props = defineProps<{
   loading?: boolean
   progress?: number
   statusText?: string
+  failed?: boolean
+  errorText?: string
+  retrying?: boolean
   /** 轻小说等场景：显示导出下载 */
   enableExport?: boolean
   /** 下载文件名（不含扩展名） */
@@ -25,6 +28,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
   regenerate: []
+  retry: []
+  dismissJob: []
 }>()
 
 const copying = ref(false)
@@ -123,10 +128,15 @@ async function onExport(format: NarrativeExportFormat) {
   </el-dialog>
 
   <JobProgress
-    :visible="!!loading"
+    :visible="!!loading || !!failed"
     :progress="progress ?? 0"
     :status-text="statusText ?? ''"
     title="叙事生成"
+    :failed="failed"
+    :error-text="errorText"
+    :retrying="retrying"
+    @retry="emit('retry')"
+    @dismiss="emit('dismissJob')"
   />
 </template>
 

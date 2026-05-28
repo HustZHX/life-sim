@@ -1,9 +1,9 @@
-import { ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { DEFAULT_TARGET_NODE_COUNT, computeStepYears, estimateTimelineChunks } from '@/utils/timelineDensity'
-import { api, pollJob, type AIModelId, type Job, type TimelineConfig } from '@/api/client'
+import { DEFAULT_TARGET_NODE_COUNT, computeStepYears, estimateTimelineChunks, isLivingProfile } from '@/utils/timelineDensity'
+import { api, type AIModelId, type Job, type Profile, type TimelineConfig } from '@/api/client'
 import { modelDisplayLabel, estimateTimelineDuration, narrativeDensityLabel, normalizeNarrativeDensity } from '@/constants/models'
 import type { NarrativeDensity } from '@/constants/models'
+import { useJobRunner } from '@/composables/useJobRunner'
 
 function escapeHtml(text: string): string {
   return text
@@ -19,6 +19,7 @@ function buildTimelineConfirmMessage(options: {
   modelLabel: string
   estTime: string
   density: NarrativeDensity
+  living?: boolean
 }): string {
   const name = options.displayName ? `「${escapeHtml(options.displayName)}」` : '该人物'
   const cfg = options.config
@@ -30,7 +31,10 @@ function buildTimelineConfirmMessage(options: {
   if (cfg?.instructions) {
     rows.push(['特殊要求', escapeHtml(cfg.instructions)])
   }
-  if (cfg?.start_year && cfg?.end_year) {
+  if (options.living) {
+    rows.push(['人生状态', '未完结（进行中）'])
+    rows.push(['节点规模', `约 ${cfg?.target_node_count ?? DEFAULT_TARGET_NODE_COUNT} 个`])
+  } else if (cfg?.start_year && cfg?.end_year) {
     const span = Math.max(0, cfg.end_year - cfg.start_year)
     rows.push(['时间区间', `${cfg.start_year} — ${cfg.end_year} 年`])
     rows.push(['寿命跨度', `${span} 年`])
@@ -93,9 +97,7 @@ export interface TimelineGenerateResult {
 }
 
 export function useTimelineGenerate() {
-  const jobRunning = ref(false)
-  const progress = ref(0)
-  const statusText = ref('')
+  const jobRunner = useJobRunner('生成时间轴')
 
   async function confirmAndGenerate(
     characterId: string,
@@ -103,12 +105,13 @@ export function useTimelineGenerate() {
     options?: {
       displayName?: string
       config?: TimelineConfig
-      /** true：提交后立即返回，不阻塞等待完成 */
       background?: boolean
+      profile?: Profile
     }
   ): Promise<TimelineGenerateResult> {
     const modelLabel = modelDisplayLabel(aiModel)
     const cfg = options?.config
+    const living = options?.profile ? isLivingProfile(options.profile) : false
     const density = normalizeNarrativeDensity(cfg?.narrative_density)
     const targetNodes = cfg?.target_node_count ?? DEFAULT_TARGET_NODE_COUNT
     const estTime = estimateTimelineDuration(aiModel, density, targetNodes)
@@ -121,6 +124,7 @@ export function useTimelineGenerate() {
           modelLabel,
           estTime,
           density,
+          living,
         }),
         '确认生成时间轴',
         {
@@ -135,41 +139,60 @@ export function useTimelineGenerate() {
       return { ok: false }
     }
 
-    jobRunning.value = true
-    progress.value = 5
-    statusText.value = '正在提交任务…'
+    const submit = () => api.generateTimeline(characterId, aiModel, cfg)
 
-    try {
-      const job = await api.generateTimeline(characterId, aiModel, cfg)
-      const timelineId = parseTimelineIdFromJob(job)
-
-      if (options?.background) {
+    if (options?.background) {
+      try {
+        const job = await submit()
+        const timelineId = parseTimelineIdFromJob(job)
         ElMessage.success('已提交后台生成，可在时间轴列表查看进度')
         return { ok: true, timelineId, jobId: job.id, background: true }
+      } catch (e: unknown) {
+        ElMessage.error(e instanceof Error ? e.message : '提交失败')
+        return { ok: false }
       }
+    }
 
-      statusText.value = 'AI 正在生成人生时间轴'
-      const done = await pollJob(job.id, (j) => {
-        progress.value = Math.max(j.progress, 5)
+    let timelineId: string | undefined
+    const ok = await jobRunner.run({
+      title: '生成时间轴',
+      submitLabel: 'AI 正在生成人生时间轴',
+      submit: async () => {
+        const job = await submit()
+        timelineId = parseTimelineIdFromJob(job)
+        return job
+      },
+      resubmit: async () => {
+        const job = await submit()
+        timelineId = parseTimelineIdFromJob(job)
+        return job
+      },
+      onProgress: (j) => {
         if (j.status === 'running') {
           const stage = j.stage_text ? `${j.stage_text} · ` : ''
-          statusText.value = `${stage}${j.progress}% · ${modelDisplayLabel(j.model || aiModel)}`
+          jobRunner.statusText.value = `${stage}${j.progress}% · ${modelDisplayLabel(j.model || aiModel)}`
         }
-      })
-      if (done.status === 'failed') throw new Error(done.error || '生成失败')
-      progress.value = 100
-      statusText.value = '生成完成'
-      ElMessage.success('人生时间轴已生成')
-      return { ok: true, timelineId: parseTimelineIdFromJob(done) ?? timelineId }
-    } catch (e: unknown) {
-      ElMessage.error(e instanceof Error ? e.message : '生成失败')
-      return { ok: false }
-    } finally {
-      jobRunning.value = false
-      statusText.value = ''
-      progress.value = 0
+      },
+      afterSuccess: () => {
+        ElMessage.success('人生时间轴已生成')
+      },
+    })
+
+    return {
+      ok,
+      timelineId,
     }
   }
 
-  return { jobRunning, progress, statusText, confirmAndGenerate }
+  return {
+    jobRunning: jobRunner.visible,
+    progress: jobRunner.progress,
+    statusText: jobRunner.statusText,
+    failed: jobRunner.failed,
+    errorText: jobRunner.errorText,
+    retrying: jobRunner.retrying,
+    retry: jobRunner.retry,
+    clearJobState: jobRunner.clearState,
+    confirmAndGenerate,
+  }
 }

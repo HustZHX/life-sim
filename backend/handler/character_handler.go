@@ -358,6 +358,43 @@ func (h *CharacterHandler) Rollback(c *gin.Context) {
 	OK(c, ch)
 }
 
+func (h *CharacterHandler) RollbackToNode(c *gin.Context) {
+	charID := c.Param("id")
+	nodeID := c.Param("nodeId")
+	var req model.RollbackToNodeRequest
+	_ = c.ShouldBindJSON(&req)
+	ch, err := h.svc.RollbackToNode(charID, nodeID, req)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	OK(c, ch)
+}
+
+func (h *CharacterHandler) RetryJob(c *gin.Context) {
+	jobID := c.Param("jobId")
+	job, err := h.svc.GetJob(jobID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			Fail(c, http.StatusNotFound, 404, "任务不存在（可能服务已重启，请重新提交）")
+			return
+		}
+		Fail(c, http.StatusInternalServerError, 500, "查询任务失败: "+err.Error())
+		return
+	}
+	var newJob *model.Job
+	if strings.HasPrefix(job.Type, "narrative_") {
+		newJob, err = h.narr.RetryJob(c.Request.Context(), jobID)
+	} else {
+		newJob, err = h.svc.RetryJob(c.Request.Context(), jobID)
+	}
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	OK(c, newJob)
+}
+
 func (h *CharacterHandler) GetJob(c *gin.Context) {
 	jobID := c.Param("jobId")
 	job, err := h.svc.GetJob(jobID)
@@ -493,6 +530,39 @@ func (h *CharacterHandler) GenerateNodeNarrative(c *gin.Context) {
 	}
 	if cached != nil {
 		OK(c, gin.H{"artifact": cached, "cached": true})
+		return
+	}
+	OK(c, job)
+}
+
+func (h *CharacterHandler) UpdateWorldLine(c *gin.Context) {
+	charID := c.Param("id")
+	timelineID := c.Param("tid")
+	var req model.WorldLineUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+	job, wl, err := h.svc.UpdateWorldLine(c.Request.Context(), charID, timelineID, req)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	if job != nil {
+		OK(c, gin.H{"job": job, "world_line": wl})
+		return
+	}
+	OK(c, gin.H{"world_line": wl})
+}
+
+func (h *CharacterHandler) RefreshWorldLine(c *gin.Context) {
+	charID := c.Param("id")
+	timelineID := c.Param("tid")
+	var req model.WorldLineRefreshRequest
+	_ = c.ShouldBindJSON(&req)
+	job, err := h.svc.StartRefreshWorldLineJob(c.Request.Context(), charID, timelineID, req.Model)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	OK(c, job)

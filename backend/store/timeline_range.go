@@ -11,6 +11,8 @@ const (
 	DefaultTargetNodeCount = 20
 	MinTargetNodeCount     = 1
 	MaxTargetNodeCount     = 25
+	// LivingProfileStepYears 未完结人生按节点推演时的参考间隔（年），与推演余生一致。
+	LivingProfileStepYears = 3
 )
 
 // ClampTargetNodeCount 将目标节点数限制在余生推演粒度 1～25。
@@ -65,12 +67,39 @@ func EffectiveDeathYear(birthYear, deathYear int) int {
 	return y
 }
 
+// IsLivingProfile 卒年未填或不大于生年，视为人生未完结。
+func IsLivingProfile(profile *model.Profile) bool {
+	if profile == nil {
+		return false
+	}
+	return profile.DeathYear <= 0 || profile.DeathYear <= profile.BirthYear
+}
+
+// ResolveLivingTimelineRange 未完结人生：只推演从出生起的前 N 个节点，不拉伸至当前年份。
+func ResolveLivingTimelineRange(targetNodeCount, birthYear int) (startYear, endYear, stepYears int) {
+	targetNodeCount = ClampTargetNodeCount(targetNodeCount)
+	stepYears = LivingProfileStepYears
+	startYear = birthYear
+	if startYear <= 0 {
+		startYear = 1
+	}
+	endYear = startYear + stepYears*targetNodeCount
+	if endYear <= startYear {
+		endYear = startYear + stepYears
+	}
+	return startYear, endYear, stepYears
+}
+
 // ResolveTimelineRange 补全并校验时间轴生成区间，按目标节点数推算参考间隔。
 func ResolveTimelineRange(cfg TimelineRangeConfig, profile *model.Profile) (TimelineRangeConfig, error) {
 	out := cfg
 	out.TargetNodeCount = ClampTargetNodeCount(out.TargetNodeCount)
 	if profile == nil {
 		return out, fmt.Errorf("档案不存在")
+	}
+	if IsLivingProfile(profile) {
+		out.StartYear, out.EndYear, out.StepYears = ResolveLivingTimelineRange(out.TargetNodeCount, profile.BirthYear)
+		return out, nil
 	}
 	effectiveDeath := EffectiveDeathYear(profile.BirthYear, profile.DeathYear)
 	if out.StartYear <= 0 {
@@ -96,6 +125,5 @@ func ResolveTimelineRange(cfg TimelineRangeConfig, profile *model.Profile) (Time
 // ResolveRegenerateTailRange 推演余生：节点数由用户配置，不与寿命跨度机械对应。
 func ResolveRegenerateTailRange(_anchorYear, _deathYear, targetNodeCount int) (stepYears, targetNodes int) {
 	targetNodeCount = ClampTargetNodeCount(targetNodeCount)
-	// 弱提示间隔，非 寿命跨度÷节点数
-	return 3, targetNodeCount
+	return LivingProfileStepYears, targetNodeCount
 }

@@ -53,7 +53,7 @@ const timelineTitle = ref('')
 
 const timelineConfig = ref<TimelineConfig>({ target_node_count: DEFAULT_TARGET_NODE_COUNT, start_year: 0, end_year: 0 })
 
-const { jobRunning, progress, statusText, confirmAndGenerate } = useTimelineGenerate()
+const { jobRunning, progress, statusText, failed, errorText, retrying, retry, clearJobState, confirmAndGenerate } = useTimelineGenerate()
 
 async function load() {
 
@@ -77,9 +77,9 @@ async function load() {
 
       target_node_count: DEFAULT_TARGET_NODE_COUNT,
 
-      start_year: prof.birth_year,
+      start_year: isLivingProfile(prof) ? 0 : prof.birth_year,
 
-      end_year: effectiveDeathYear(prof),
+      end_year: isLivingProfile(prof) ? 0 : effectiveDeathYear(prof),
 
     }
 
@@ -101,7 +101,12 @@ async function load() {
 
 function onProfileUpdate(p: Profile) {
   profile.value = p
-  timelineConfig.value.end_year = effectiveDeathYear(p)
+  if (isLivingProfile(p)) {
+    timelineConfig.value.start_year = 0
+    timelineConfig.value.end_year = 0
+  } else {
+    timelineConfig.value.end_year = effectiveDeathYear(p)
+  }
 }
 
 async function onGenerateClick() {
@@ -111,6 +116,7 @@ async function onGenerateClick() {
       ...timelineConfig.value,
       title: timelineTitle.value.trim() || undefined,
     },
+    profile: profile.value ?? undefined,
     background: true,
   })
   if (result.ok) {
@@ -133,15 +139,15 @@ onMounted(load)
   <div class="page-card" v-loading="pageLoading">
 
     <JobProgress
-
       :visible="jobRunning"
-
       :progress="progress"
-
       :status-text="statusText"
-
       title="时间轴生成中"
-
+      :failed="failed"
+      :error-text="errorText"
+      :retrying="retrying"
+      @retry="retry()"
+      @dismiss="clearJobState()"
     />
 
 
@@ -160,7 +166,7 @@ onMounted(load)
 
       v-if="profile && isLivingProfile(profile)"
 
-      title="该人物档案未标注卒年（仍在世），时间轴默认生成至当前年份，可在下方调整结束年份。"
+      title="人生未完结：仅选择推演节点数；经历与职业随剧情填写，无需指定起止年份。"
 
       type="warning"
 

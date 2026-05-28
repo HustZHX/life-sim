@@ -161,6 +161,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_narrative_cache ON narrative_artifacts(
 CREATE UNIQUE INDEX IF NOT EXISTS idx_narrative_cache ON narrative_artifacts(
   version_id, kind, node_id, from_sequence, to_sequence, person
 )`)
+	_, _ = s.db.Exec(`ALTER TABLE narrative_artifacts ADD COLUMN content_key TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_narrative_content_key ON narrative_artifacts(content_key, kind) WHERE content_key != ''`)
+	_, _ = s.db.Exec(`ALTER TABLE timelines ADD COLUMN world_line_json TEXT DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE jobs ADD COLUMN request_json TEXT DEFAULT ''`)
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_jobs_char_type ON jobs(character_id, type, created_at DESC)`)
 	_, err = s.db.Exec(`
@@ -208,6 +211,20 @@ CREATE TABLE IF NOT EXISTS dialogue_identity_presets (
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
   PRIMARY KEY (character_id, version_id, node_id)
+);
+`)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  display_name TEXT NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL
 );
 `)
 	if err != nil {
@@ -737,6 +754,10 @@ func ParseProfile(raw string, characterID string) (*model.Profile, error) {
 }
 
 func ParseTimelineNodes(raw string, characterID, versionID, protagonistName string) ([]model.LifeNode, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, fmt.Errorf("AI 返回空 JSON")
+	}
 	var resp struct {
 		Nodes []struct {
 			Sequence            int                 `json:"sequence"`

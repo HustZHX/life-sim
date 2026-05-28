@@ -44,8 +44,10 @@ func (s *CharacterService) generateEraContext(
 func resolveEraContext(
 	ctx context.Context,
 	s *CharacterService,
+	characterID string,
 	characterMode string,
 	profileJSON string,
+	profileHash string,
 	apiModel string,
 	cfg timelineJobConfig,
 	userOverride string,
@@ -56,5 +58,14 @@ func resolveEraContext(
 		}
 		return "【时代背景与大事记】\n" + text, nil
 	}
-	return s.generateEraContext(ctx, characterMode, profileJSON, apiModel, cfg)
+	key := s.aiCache.eraContextKey(characterID, profileHash, characterMode, cfg)
+	if cached, ok := s.aiCache.getEraContext(key); ok {
+		return cached, nil
+	}
+	text, err := s.generateEraContext(ctx, characterMode, profileJSON, apiModel, cfg)
+	if err != nil {
+		return "", err
+	}
+	s.aiCache.putEraContext(key, text)
+	return text, nil
 }

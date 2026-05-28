@@ -2,11 +2,12 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
-import { api, pollJob, type SavedLightNovelMeta } from '@/api/client'
-import type { AIModelId, BranchNode, LifeNode, Timeline } from '@/api/client'
-import { DEFAULT_AI_MODEL, modelDisplayLabel } from '@/constants/models'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { api, type SavedLightNovelMeta, pollJob } from '@/api/client'
+import type { AIModelId, BranchNode, LifeNode, Timeline, WorldLine } from '@/api/client'
+import { DEFAULT_AI_MODEL, DEFAULT_CASCADE_MODEL, modelDisplayLabel } from '@/constants/models'
 import TimelineAxis from '@/components/TimelineAxis.vue'
+import WorldLinePanel from '@/components/WorldLinePanel.vue'
 import NodeEditor from '@/components/NodeEditor.vue'
 import BranchFlowchart from '@/components/BranchFlowchart.vue'
 import ProfilePanel from '@/components/ProfilePanel.vue'
@@ -14,11 +15,13 @@ import NarrativeDialog from '@/components/NarrativeDialog.vue'
 import CharacterDialogueDialog from '@/components/CharacterDialogueDialog.vue'
 import LightNovelJobList from '@/components/LightNovelJobList.vue'
 import ModelSelector from '@/components/ModelSelector.vue'
+import JobProgress from '@/components/JobProgress.vue'
 import type { Profile } from '@/api/client'
 import { copyTextToClipboard, formatTimelineExport } from '@/utils/exportTimelineText'
 import { useNarrativeGenerate } from '@/composables/useNarrativeGenerate'
 import { useLightNovelJobs, type LightNovelJobEntry } from '@/composables/useLightNovelJobs'
-import { DEFAULT_TARGET_NODE_COUNT } from '@/utils/timelineDensity'
+import { useJobRunner } from '@/composables/useJobRunner'
+import { DEFAULT_TARGET_NODE_COUNT, isLivingProfile } from '@/utils/timelineDensity'
 import {
   LIGHT_NOVEL_PERSON_OPTIONS,
   lightNovelPersonLabel,
@@ -31,6 +34,7 @@ const router = useRouter()
 const charId = route.params.id as string
 
 const nodes = ref<LifeNode[]>([])
+const worldLine = ref<WorldLine | null>(null)
 const profile = ref<Profile | null>(null)
 const timelines = ref<Timeline[]>([])
 const currentTimeline = ref<Timeline | null>(null)
@@ -46,9 +50,19 @@ const detailPanelOpen = ref(false)
 
 const dialogueRef = ref<InstanceType<typeof CharacterDialogueDialog> | null>(null)
 
-const regenVisible = ref(false)
-const regenProgress = ref(0)
-const regenStatus = ref('')
+const jobRunner = useJobRunner('任务进度')
+const {
+  visible: jobVisible,
+  progress: jobProgress,
+  statusText: jobStatusText,
+  title: jobTitle,
+  failed: jobFailed,
+  errorText: jobErrorText,
+  retrying: jobRetrying,
+  retry: retryJobRunner,
+  clearState: clearJobState,
+} = jobRunner
+const jobBusy = computed(() => jobVisible.value && !jobFailed.value)
 
 const exportVisible = ref(false)
 const exportText = ref('')
@@ -62,9 +76,15 @@ const {
   running: narrativeRunning,
   progress: narrativeProgress,
   statusText: narrativeStatusText,
+  jobPanelVisible: narrativeJobVisible,
+  failed: narrativeFailed,
+  errorText: narrativeErrorText,
+  retrying: narrativeRetrying,
   close: closeNarrative,
   regenerate: regenerateNodeNarrative,
   openNodeNarrative,
+  retryNarrativeJob,
+  clearJobState: clearNarrativeJobState,
 } = narrative
 
 const lightNovelJobs = useLightNovelJobs(charId)
@@ -75,6 +95,7 @@ const {
   activeCount: lightNovelActiveCount,
   refreshList: refreshLightNovelJobs,
   submit: submitLightNovelJob,
+  retryJob: retryLightNovelJob,
 } = lightNovelJobs
 
 const lightNovelPickerVisible = ref(false)
@@ -99,6 +120,38 @@ const narrativeChangeVisible = ref(false)
 const narrativeChangeInstruction = ref('')
 const narrativeChangeModel = ref<AIModelId>(DEFAULT_AI_MODEL)
 const narrativeChangeTargetNodes = ref(DEFAULT_TARGET_NODE_COUNT)
+
+const appendNextVisible = ref(false)
+const appendNextTitle = ref('')
+const appendNextModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+
+const profileLiving = computed(() => !!profile.value && isLivingProfile(profile.value))
+
+const lastTimelineNode = computed(() => {
+  const list = nodes.value
+  if (!list.length) return null
+  return list.reduce((a, b) => (a.sequence >= b.sequence ? a : b))
+})
+
+const appendNextDisabled = computed(
+  () =>
+    pageLoading.value ||
+    jobBusy.value ||
+    !profileLiving.value ||
+    !lastTimelineNode.value ||
+    !!(
+      currentTimelineMeta.value && isTimelineGenerating(currentTimelineMeta.value)
+    )
+)
+
+const rollbackEnabled = computed(
+  () =>
+    !pageLoading.value &&
+    !jobBusy.value &&
+    nodes.value.length > 1 &&
+    nodes.value.every((n) => n.version_id === currentVersionId.value) &&
+    !(currentTimelineMeta.value && isTimelineGenerating(currentTimelineMeta.value))
+)
 
 const nodeSequenceOptions = computed(() =>
   nodes.value.map((n) => ({
@@ -298,36 +351,30 @@ async function confirmNarrativeChange() {
   if (!selectedTimelineId.value) return
 
   narrativeChangeVisible.value = false
-  regenVisible.value = true
-  regenProgress.value = 5
-  regenStatus.value = '正在提交叙述变更…'
-  try {
-    const job = await api.applyNarrativeChange(charId, {
-      timeline_id: selectedTimelineId.value,
-      instruction,
-      model: narrativeChangeModel.value,
-      target_node_count: narrativeChangeTargetNodes.value,
-    })
-    const done = await pollJob(job.id, (j) => {
-      regenProgress.value = Math.max(j.progress, 5)
+  const body = {
+    timeline_id: selectedTimelineId.value,
+    instruction,
+    model: narrativeChangeModel.value,
+    target_node_count: narrativeChangeTargetNodes.value,
+  }
+  const ok = await jobRunner.run({
+    title: '叙述变更',
+    submitLabel: '正在提交叙述变更…',
+    submit: () => api.applyNarrativeChange(charId, body),
+    resubmit: () => api.applyNarrativeChange(charId, body),
+    onProgress: (j) => {
       if (j.status === 'running') {
         const stage = j.stage_text ? `${j.stage_text} · ` : '处理中… '
-        regenStatus.value = `${stage}${j.progress}%（${modelDisplayLabel(j.model || narrativeChangeModel.value)}）`
+        jobRunner.statusText.value = `${stage}${j.progress}%（${modelDisplayLabel(j.model || narrativeChangeModel.value)}）`
       }
-    })
-    if (done.status === 'failed') throw new Error(done.error || '叙述变更失败')
-    regenProgress.value = 100
-    regenStatus.value = '变更完成'
-    await load()
-    ElMessage.success('已根据叙述创建新分支并推演后续节点')
-  } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '叙述变更失败')
-  } finally {
-    setTimeout(() => {
-      regenVisible.value = false
-      regenProgress.value = 0
-      regenStatus.value = ''
-    }, 1500)
+    },
+    afterSuccess: async () => {
+      await load()
+      ElMessage.success('已根据叙述创建新分支并推演后续节点')
+    },
+  })
+  if (!ok && !jobFailed.value) {
+    ElMessage.error('叙述变更失败')
   }
 }
 
@@ -350,6 +397,65 @@ async function copyExport() {
     ElMessage.error('复制失败，请手动全选复制')
   } finally {
     exportCopying.value = false
+  }
+}
+
+async function onWorldLineApplyJob(jobId: string) {
+  jobTitle.value = '世界线同步'
+  jobVisible.value = true
+  jobFailed.value = false
+  jobErrorText.value = ''
+  jobProgress.value = 10
+  jobStatusText.value = '正在同步人生节点…'
+  try {
+    const done = await pollJob(jobId, (j) => {
+      jobProgress.value = Math.max(j.progress, 5)
+      if (j.stage_text) jobStatusText.value = j.stage_text
+    })
+    if (done.status === 'failed') throw new Error(done.error || '任务失败')
+    jobProgress.value = 100
+    jobStatusText.value = '完成'
+    await load()
+    ElMessage.success('世界线已同步到人生节点')
+    setTimeout(clearJobState, 1500)
+  } catch (e: unknown) {
+    jobFailed.value = true
+    jobErrorText.value = e instanceof Error ? e.message : '任务失败'
+    jobStatusText.value = '任务失败'
+  }
+}
+
+async function refreshWorldLine() {
+  if (!selectedTimelineId.value || !nodes.value.length) {
+    ElMessage.warning('当前时间轴尚无节点')
+    return
+  }
+  const ok = await jobRunner.run({
+    title: '刷新世界线',
+    submitLabel: '正在提交刷新任务…',
+    submit: () =>
+      api.refreshWorldLine(charId, selectedTimelineId.value, { model: DEFAULT_CASCADE_MODEL }),
+    resubmit: () =>
+      api.refreshWorldLine(charId, selectedTimelineId.value, { model: DEFAULT_CASCADE_MODEL }),
+    onProgress: (j) => {
+      if (j.status === 'running' && j.stage_text) {
+        jobRunner.statusText.value = j.stage_text
+      }
+    },
+    afterSuccess: async () => {
+      await load()
+      ElMessage.success('世界线已更新')
+    },
+  })
+  if (!ok && !jobFailed.value) {
+    ElMessage.error('刷新世界线失败')
+  }
+}
+
+function onWorldLineUpdated(wl: WorldLine) {
+  worldLine.value = wl
+  if (currentTimeline.value) {
+    currentTimeline.value = { ...currentTimeline.value, world_line: wl }
   }
 }
 
@@ -380,6 +486,7 @@ async function load() {
         : Promise.resolve({ timeline_id: '', active_version_id: '', roots: [] as BranchNode[] }),
     ])
     nodes.value = tl.nodes
+    worldLine.value = tl.timeline.world_line ?? null
     const listMeta = timelines.value.find((t) => t.id === tl.timeline.id)
     currentTimeline.value = listMeta
       ? { ...tl.timeline, version_count: listMeta.version_count, active_job: listMeta.active_job }
@@ -465,49 +572,90 @@ async function onSave(payload: {
   target_node_count?: number
 }) {
   if (!selectedNode.value) return
-  regenVisible.value = true
-  regenProgress.value = 5
-  regenStatus.value =
-    payload.mode === 'full_cascade' ? '正在提交推演后续…' : '正在更新本节点…'
-  try {
-    const job = await api.patchNode(charId, selectedNode.value.id, {
-      title: payload.patch.title,
-      events: payload.patch.events,
-      thoughts: payload.patch.thoughts,
-      personality_snapshot: payload.patch.personality_snapshot,
-      mode: payload.mode as 'full_cascade' | 'inner_current',
-      model: payload.model,
-      target_node_count: payload.target_node_count,
-    })
-    const done = await pollJob(job.id, (j) => {
-      regenProgress.value = Math.max(j.progress, 5)
+  const nodeId = selectedNode.value.id
+  const patchBody = {
+    title: payload.patch.title,
+    events: payload.patch.events,
+    thoughts: payload.patch.thoughts,
+    personality_snapshot: payload.patch.personality_snapshot,
+    mode: payload.mode as 'full_cascade' | 'inner_current',
+    model: payload.model,
+    target_node_count: payload.target_node_count,
+  }
+  const ok = await jobRunner.run({
+    title: '任务进度',
+    submitLabel: payload.mode === 'full_cascade' ? '正在提交推演后续…' : '正在更新本节点…',
+    submit: () => api.patchNode(charId, nodeId, patchBody),
+    resubmit: () => api.patchNode(charId, nodeId, patchBody),
+    onProgress: (j) => {
       if (j.status === 'running') {
         const stage = j.stage_text ? `${j.stage_text} · ` : ''
         const label = payload.mode === 'full_cascade' ? '推演后续' : '更新中'
-        regenStatus.value = `${stage}${label} ${j.progress}%（${modelDisplayLabel(j.model || payload.model)}）`
+        jobRunner.statusText.value = `${stage}${label} ${j.progress}%（${modelDisplayLabel(j.model || payload.model)}）`
       }
-    })
-    if (done.status === 'failed') throw new Error(done.error || '任务失败')
-    regenProgress.value = 100
-    regenStatus.value = payload.mode === 'full_cascade' ? '推演后续完成' : '更新完成'
-    await load()
-    const updated = nodes.value.find((n: LifeNode) => n.sequence === selectedNode.value?.sequence)
-    if (updated) {
-      selectedNode.value = updated
-    }
-    const msg =
-      payload.mode === 'full_cascade'
-        ? '已创建新分支并推演后续节点'
-        : '已更新本节点（未创建新分支；推演后续才会分叉）'
-    ElMessage.success(msg)
-  } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : '保存失败')
-  } finally {
-    setTimeout(() => {
-      regenVisible.value = false
-      regenProgress.value = 0
-      regenStatus.value = ''
-    }, 1500)
+    },
+    afterSuccess: async () => {
+      await load()
+      const updated = nodes.value.find((n: LifeNode) => n.sequence === selectedNode.value?.sequence)
+      if (updated) {
+        selectedNode.value = updated
+      }
+      const msg =
+        payload.mode === 'full_cascade'
+          ? '已创建新分支并推演后续节点'
+          : '已更新本节点（未创建新分支；推演后续才会分叉）'
+      ElMessage.success(msg)
+    },
+  })
+  if (!ok && !jobFailed.value) {
+    ElMessage.error('保存失败')
+  }
+}
+
+function openAppendNext() {
+  if (appendNextDisabled.value) return
+  appendNextTitle.value = ''
+  appendNextVisible.value = true
+}
+
+async function confirmAppendNext(randomTitle: boolean) {
+  const anchor = lastTimelineNode.value
+  if (!anchor || appendNextDisabled.value) return
+  const titleHint = randomTitle ? '' : appendNextTitle.value.trim()
+  appendNextVisible.value = false
+  const patchBody = {
+    title: anchor.title,
+    events: anchor.events,
+    thoughts: anchor.thoughts ?? '',
+    personality_snapshot: anchor.personality_snapshot ?? '',
+    mode: 'append_next' as const,
+    model: appendNextModel.value,
+    target_node_count: 1,
+    next_node_title: titleHint,
+  }
+  const ok = await jobRunner.run({
+    title: '继续推演',
+    submitLabel: '正在继续推演…',
+    submit: () => api.patchNode(charId, anchor.id, patchBody),
+    resubmit: () => api.patchNode(charId, anchor.id, patchBody),
+    onProgress: (j) => {
+      if (j.status === 'running') {
+        const stage = j.stage_text ? `${j.stage_text} · ` : ''
+        jobRunner.statusText.value = `${stage}继续推演 ${j.progress}%（${modelDisplayLabel(j.model || appendNextModel.value)}）`
+      }
+    },
+    afterSuccess: async () => {
+      await load()
+      const newLast = lastTimelineNode.value
+      if (newLast) {
+        selectedNode.value = newLast
+        detailPanelOpen.value = true
+      }
+      ElMessage.success('已追加 1 个节点并创建新分支')
+    },
+  })
+  if (!ok && !jobFailed.value) {
+    ElMessage.error('继续推演失败')
   }
 }
 
@@ -523,6 +671,44 @@ async function onActivateBranch(versionId: string) {
     ElMessage.error(e instanceof Error ? e.message : '切换分支失败')
   } finally {
     activatingBranchId.value = ''
+    pageLoading.value = false
+  }
+}
+
+async function onRollbackToNode(node: LifeNode) {
+  if (!rollbackEnabled.value) return
+  const afterCount = nodes.value.filter((n) => n.sequence > node.sequence).length
+  if (afterCount <= 0) {
+    ElMessage.warning('该节点已是时间轴末尾')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将回退到「${node.year} 年 · ${node.title}」，并丢弃其后 ${afterCount} 个节点。此操作会创建新分支，原时间轴仍可在分支图中查看。`,
+      '回退至此',
+      {
+        confirmButtonText: '确认回退',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    )
+  } catch {
+    return
+  }
+
+  pageLoading.value = true
+  try {
+    await api.rollbackToNode(charId, node.id)
+    await load()
+    const updated = nodes.value.find((n) => n.sequence === node.sequence)
+    if (updated) {
+      selectedNode.value = updated
+      detailPanelOpen.value = true
+    }
+    ElMessage.success(`已回退至节点 #${node.sequence}`)
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '回退失败')
+  } finally {
     pageLoading.value = false
   }
 }
@@ -602,14 +788,35 @@ onMounted(async () => {
 
     <div class="timeline-layout" :class="{ 'detail-collapsed': !detailPanelOpen }">
       <section class="col-timeline">
-        <div v-loading="pageLoading" class="page-card timeline-scroll">
-          <TimelineAxis
+        <div v-loading="pageLoading" class="page-card timeline-dual">
+          <WorldLinePanel
+            class="track-world"
+            :character-id="charId"
+            :timeline-id="selectedTimelineId"
+            :world-line="worldLine"
             :nodes="nodes"
-            :selected-id="selectedNode?.id"
-            :profile="profile"
-            :reading-focus="!detailPanelOpen"
-            @select="onSelect"
+            :loading="pageLoading || jobBusy"
+            :refreshing="jobBusy"
+            @updated="onWorldLineUpdated"
+            @apply-job="onWorldLineApplyJob"
+            @refresh="refreshWorldLine"
           />
+          <div class="track-life">
+            <header class="track-life-head">
+              <h3>人生节点</h3>
+              <span v-if="nodes.length" class="track-life-meta">{{ nodes.length }} 个节点</span>
+            </header>
+            <TimelineAxis
+              :nodes="nodes"
+              :selected-id="selectedNode?.id"
+              :profile="profile"
+              :append-disabled="appendNextDisabled"
+              :rollback-enabled="rollbackEnabled"
+              @select="onSelect"
+              @append="openAppendNext"
+              @rollback="onRollbackToNode"
+            />
+          </div>
         </div>
       </section>
 
@@ -624,10 +831,7 @@ onMounted(async () => {
               :node="selectedNode"
               :profile="profile"
               :read-only="selectedNodeReadOnly"
-              :loading="regenVisible"
-              :regen-visible="regenVisible"
-              :regen-progress="regenProgress"
-              :regen-status="regenStatus"
+              :loading="jobBusy"
               @save="onSave"
               @narrative="(kind, model) => selectedNode && openNodeNarrative(charId, selectedNode, kind, model)"
               @dialogue="onOpenDialogue"
@@ -648,6 +852,38 @@ onMounted(async () => {
         </div>
       </aside>
     </div>
+
+    <el-dialog
+      v-model="appendNextVisible"
+      title="继续推演"
+      width="min(480px, 92vw)"
+      destroy-on-close
+    >
+      <p class="export-hint">
+        在时间轴末尾追加 1 个节点。可填写下一节点标题，或留空由 AI 随机拟定标题与经历。
+      </p>
+      <el-form label-position="top">
+        <el-form-item label="下一节点标题（可选）">
+          <el-input
+            v-model="appendNextTitle"
+            maxlength="80"
+            show-word-limit
+            placeholder="留空则随机生成标题"
+            clearable
+          />
+        </el-form-item>
+        <ModelSelector v-model="appendNextModel" />
+      </el-form>
+      <template #footer>
+        <el-button @click="appendNextVisible = false">取消</el-button>
+        <el-button :disabled="jobBusy" @click="confirmAppendNext(true)">
+          随机生成
+        </el-button>
+        <el-button type="primary" :disabled="jobBusy" @click="confirmAppendNext(false)">
+          开始推演
+        </el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="narrativeChangeVisible"
@@ -676,7 +912,7 @@ onMounted(async () => {
       </el-form>
       <template #footer>
         <el-button @click="narrativeChangeVisible = false">取消</el-button>
-        <el-button type="primary" :disabled="regenVisible" @click="confirmNarrativeChange">
+        <el-button type="primary" :disabled="jobBusy" @click="confirmNarrativeChange">
           应用并重算后续
         </el-button>
       </template>
@@ -771,6 +1007,7 @@ onMounted(async () => {
       :loading="lightNovelListLoading"
       @refresh="refreshLightNovelJobs"
       @view="viewLightNovelJob"
+      @retry="retryLightNovelJob"
     />
 
     <CharacterDialogueDialog
@@ -783,11 +1020,28 @@ onMounted(async () => {
       :model-value="narrativeVisible"
       :title="narrativeTitle"
       :content="narrativeContent"
-      :loading="narrativeRunning && !lightNovelViewContext"
+      :loading="(narrativeRunning || narrativeJobVisible) && !lightNovelViewContext"
       :progress="narrativeProgress"
       :status-text="narrativeStatusText"
+      :failed="narrativeFailed"
+      :error-text="narrativeErrorText"
+      :retrying="narrativeRetrying"
       @update:model-value="onNarrativeDialogClose"
       @regenerate="onNarrativeRegenerate"
+      @retry="retryNarrativeJob"
+      @dismiss-job="clearNarrativeJobState"
+    />
+
+    <JobProgress
+      :visible="jobVisible"
+      :progress="jobProgress"
+      :status-text="jobStatusText"
+      :title="jobTitle"
+      :failed="jobFailed"
+      :error-text="jobErrorText"
+      :retrying="jobRetrying"
+      @retry="retryJobRunner()"
+      @dismiss="clearJobState()"
     />
 
     <el-dialog
@@ -811,7 +1065,7 @@ onMounted(async () => {
 /* 时间轴页需要更宽的三栏布局 */
 .timeline-page {
   padding-bottom: 24px;
-  max-width: 1500px;
+  max-width: 1680px;
   margin: 0 auto;
 }
 .toolbar {
@@ -918,6 +1172,44 @@ onMounted(async () => {
   container-type: inline-size;
 }
 
+.timeline-dual {
+  display: grid;
+  grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+}
+
+.track-world {
+  min-width: 0;
+}
+
+.track-life {
+  min-width: 0;
+  padding: 0 20px 24px;
+}
+
+.track-life-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 14px 0 12px;
+  background: #fff;
+  border-bottom: 1px solid #ebeef5;
+  margin-bottom: 8px;
+}
+
+.track-life-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #303133;
+}
+
+.track-life-meta {
+  font-size: 0.78rem;
+  color: #909399;
+}
+
 .timeline-layout.detail-collapsed {
   grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
   width: 100%;
@@ -928,10 +1220,8 @@ onMounted(async () => {
   min-width: 0;
 }
 
-.timeline-layout.detail-collapsed .col-timeline .timeline-scroll {
-  padding: 16px 20px 24px;
-  width: 100%;
-  min-height: calc(100vh - 200px);
+.timeline-layout.detail-collapsed .track-life {
+  padding: 0 20px 24px;
 }
 
 .timeline-layout.detail-collapsed .col-dock-side .dock-panel {
@@ -1007,8 +1297,25 @@ onMounted(async () => {
   .col-dock-side .dock-panel {
     max-height: 40vh;
   }
-  .col-timeline .timeline-scroll {
-    padding: 16px;
+  .col-timeline .timeline-dual {
+    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  }
+  .track-life {
+    padding: 0 16px 20px;
+  }
+}
+
+@media (max-width: 960px) {
+  .timeline-dual {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+  }
+  .track-world {
+    border-right: none;
+    border-bottom: 1px solid #e4e7ed;
+  }
+  .track-life {
+    padding: 0 12px 20px;
   }
 }
 
@@ -1019,11 +1326,7 @@ onMounted(async () => {
     max-width: none;
     gap: 12px;
   }
-  .col-timeline .timeline-scroll {
-    padding: 12px;
-    min-height: auto;
-  }
-  .timeline-layout.detail-collapsed .col-timeline .timeline-scroll {
+  .col-timeline .timeline-dual {
     min-height: auto;
   }
   .col-dock-editor {

@@ -51,9 +51,13 @@ func (s *CharacterService) generateStandardTimelineNodes(
 		go tickJobProgress(s.store, jobID, progress+2, progress+70/len(chunks), done)
 
 		var raw string
-		if i == 0 && chunk.TotalChunks == 1 {
+		if i == 0 {
 			if sess := s.aiCache.getSession(characterID, profileHash); sess != nil {
-				user = buildTimelineUserWithoutProfile(cfg, span)
+				if chunk.TotalChunks == 1 {
+					user = buildTimelineUserWithoutProfile(cfg, span)
+				} else {
+					user = buildTimelineChunkUserWithoutProfile(cfg, chunk, span)
+				}
 				raw, err = s.ai.ChatJSONSession(ctx, apiModel, sess, user)
 			} else {
 				raw, err = s.ai.ChatJSONModel(ctx, apiModel, prompt, user)

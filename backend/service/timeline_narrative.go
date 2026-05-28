@@ -29,6 +29,7 @@ func (s *CharacterService) generateRichTimelineNodes(
 	characterMode string,
 	profile *model.Profile,
 	profileJSON string,
+	profileHash string,
 	apiModel string,
 	cfg timelineJobConfig,
 	versionID string,
@@ -63,9 +64,24 @@ func (s *CharacterService) generateRichTimelineNodes(
 		} else {
 			user = buildTimelineChunkUser(profileJSON, chunkCfg, yc, span)
 		}
-		user = "【骨架阶段】只输出史实/人生锚点，不写长叙事。\n" + user
+		userPrefix := "【骨架阶段】只输出史实/人生锚点，不写长叙事。\n"
 
-		raw, err := s.ai.ChatJSONModel(ctx, apiModel, skeletonPrompt, user)
+		var raw string
+		if i == 0 {
+			if sess := s.aiCache.getSession(characterID, profileHash); sess != nil {
+				var userBody string
+				if yc.TotalChunks == 1 {
+					userBody = buildTimelineUserWithoutProfile(chunkCfg, span)
+				} else {
+					userBody = buildTimelineChunkUserWithoutProfile(chunkCfg, yc, span)
+				}
+				raw, err = s.ai.ChatJSONSession(ctx, apiModel, sess, userPrefix+userBody)
+			} else {
+				raw, err = s.ai.ChatJSONModel(ctx, apiModel, skeletonPrompt, userPrefix+user)
+			}
+		} else {
+			raw, err = s.ai.ChatJSONModel(ctx, apiModel, skeletonPrompt, userPrefix+user)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("骨架生成失败: %w", err)
 		}

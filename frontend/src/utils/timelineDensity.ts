@@ -41,6 +41,10 @@ export function formatTimelineSummary(
   return `${startYear}—${endYear} 年 · 约 ${targetNodeCount} 个节点 · 参考间隔 ${step} 年`
 }
 
+export function formatLivingTimelineSummary(targetNodeCount: number): string {
+  return `进行中人生 · 约 ${targetNodeCount} 个节点（不指定起止年份）`
+}
+
 export function formatRegenSummary(
   _anchorYear: number,
   _deathYear: number,

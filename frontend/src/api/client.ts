@@ -4,7 +4,18 @@ import { DEFAULT_AI_MODEL } from '@/constants/models'
 
 export type { AIModelId }
 
-const http = axios.create({ baseURL: '', timeout: 60000 })
+const http = axios.create({ baseURL: '', timeout: 60000, withCredentials: true })
+
+export interface AuthStatus {
+  enabled: boolean
+  gate_passed: boolean
+  logged_in: boolean
+}
+
+export interface AuthUser {
+  username: string
+  display_name: string
+}
 
 export interface ApiResponse<T> {
   code: number
@@ -36,11 +47,38 @@ export interface Timeline {
   current_version_id?: string
   node_count?: number
   version_count?: number
+  world_line?: WorldLine
   generation_status?: 'ready' | 'generating' | 'failed'
   generation_error?: string
   active_job?: TimelineActiveJob
   created_at: string
   updated_at: string
+}
+
+export interface WorldLineEvent {
+  year: number
+  name: string
+  description?: string
+  impact?: string
+  divergence_note?: string
+  caused_by_node_sequence?: number | null
+}
+
+export interface WorldLine {
+  timeline_id: string
+  era_summary?: string
+  historical_trend: string
+  daily_life_context?: string
+  events: WorldLineEvent[]
+  start_year?: number
+  end_year?: number
+  updated_at?: string
+}
+
+export interface WorldLineUpdatePayload {
+  world_line: WorldLine
+  model?: AIModelId
+  apply_to_nodes?: boolean
 }
 
 export interface HistoryItem {
@@ -248,9 +286,10 @@ export interface PatchNodePayload {
   events: string
   thoughts: string
   personality_snapshot: string
-  mode: 'full_cascade' | 'inner_current' | 'inner_subsequent'
+  mode: 'full_cascade' | 'append_next' | 'inner_current' | 'inner_subsequent'
   model: AIModelId
   target_node_count?: number
+  next_node_title?: string
   confirmed_death_year?: number
   confirmed_death_cause?: string
   lifespan_reasoning?: string
@@ -435,7 +474,80 @@ async function unwrap<T>(p: Promise<{ data: ApiResponse<T> }>): Promise<T> {
   }
 }
 
+let refreshPromise: Promise<void> | null = null
+
+async function refreshAuthSession() {
+  if (!refreshPromise) {
+    refreshPromise = unwrap<{ ok: boolean }>(http.post('/api/v1/auth/refresh'))
+      .then(() => undefined)
+      .finally(() => {
+        refreshPromise = null
+      })
+  }
+  await refreshPromise
+}
+
+http.interceptors.response.use(
+  (response) => response,
+  async (error: unknown) => {
+    if (!axios.isAxiosError(error) || !error.response) {
+      throw error
+    }
+    const status = error.response.status
+    const body = error.response.data as ApiResponse<unknown> | undefined
+    const msg = body?.message
+    const config = error.config as (typeof error.config & { _retry?: boolean }) | undefined
+    const url = config?.url ?? ''
+
+    if (status === 401 && msg === 'token_expired' && config && !config._retry && !url.includes('/auth/')) {
+      config._retry = true
+      try {
+        await refreshAuthSession()
+        return http(config)
+      } catch {
+        if (typeof window !== 'undefined') window.location.href = '/login'
+        throw error
+      }
+    }
+
+    if (status === 401 && msg === 'gate_required' && !url.includes('/auth/gate')) {
+      if (typeof window !== 'undefined') window.location.href = '/gate'
+    }
+    if (
+      status === 401 &&
+      (msg === 'login_required' || msg === 'token_expired') &&
+      !url.includes('/auth/login') &&
+      !url.includes('/auth/gate')
+    ) {
+      if (typeof window !== 'undefined') window.location.href = '/login'
+    }
+
+    throw error
+  }
+)
+
 export const api = {
+  authStatus: () => unwrap<AuthStatus>(http.get('/api/v1/auth/status')),
+
+  authGate: (code: string) => unwrap<{ ok: boolean }>(http.post('/api/v1/auth/gate', { code })),
+
+  authLogin: (username: string, password: string) =>
+    unwrap<AuthUser>(http.post('/api/v1/auth/login', { username, password })),
+
+  authRefresh: () => unwrap<{ ok: boolean }>(http.post('/api/v1/auth/refresh')),
+
+  authMe: () => unwrap<AuthUser>(http.get('/api/v1/auth/me')),
+
+  authLogout: () => unwrap<{ ok: boolean }>(http.post('/api/v1/auth/logout')),
+
+  authChangePassword: (oldPassword: string, newPassword: string) =>
+    unwrap<{ ok: boolean }>(
+      http.post('/api/v1/auth/change-password', {
+        old_password: oldPassword,
+        new_password: newPassword,
+      })
+    ),
+
   listModels: () =>
     unwrap<{ models: AIModel[] }>(http.get('/api/v1/models')),
 
@@ -539,6 +651,24 @@ export const api = {
       })
     ),
 
+  updateWorldLine: (
+    charId: string,
+    timelineId: string,
+    body: WorldLineUpdatePayload
+  ) =>
+    unwrap<{ job?: Job; world_line: WorldLine }>(
+      http.patch(`/api/v1/characters/${charId}/timelines/${timelineId}/world-line`, body)
+    ),
+
+  refreshWorldLine: (
+    charId: string,
+    timelineId: string,
+    body: { model: AIModelId }
+  ) =>
+    unwrap<Job>(
+      http.post(`/api/v1/characters/${charId}/timelines/${timelineId}/world-line/refresh`, body)
+    ),
+
   patchNode: (charId: string, nodeId: string, body: PatchNodePayload) =>
     unwrap<Job>(http.patch(`/api/v1/characters/${charId}/nodes/${nodeId}`, body)),
 
@@ -573,6 +703,8 @@ export const api = {
 
   getJob: (jobId: string) => unwrap<Job>(http.get(`/api/v1/jobs/${jobId}`)),
 
+  retryJob: (jobId: string) => unwrap<Job>(http.post(`/api/v1/jobs/${jobId}/retry`)),
+
   listVersions: (id: string, timelineId?: string) =>
     unwrap<{ versions: TimelineVersion[] }>(
       timelineId
@@ -600,6 +732,9 @@ export const api = {
 
   rollback: (charId: string, vid: string) =>
     unwrap<Character>(http.post(`/api/v1/characters/${charId}/versions/${vid}/rollback`)),
+
+  rollbackToNode: (charId: string, nodeId: string, body?: { change_summary?: string }) =>
+    unwrap<Character>(http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/rollback-to`, body ?? {})),
 
   getNarrative: (
     charId: string,

@@ -15,20 +15,16 @@ import ModelSelector from '@/components/ModelSelector.vue'
 import HighlightedText from '@/components/HighlightedText.vue'
 import TimelineConfigPanel from '@/components/TimelineConfigPanel.vue'
 import NodeSceneMeta from '@/components/NodeSceneMeta.vue'
-import { DEFAULT_TARGET_NODE_COUNT } from '@/utils/timelineDensity'
+import { MIN_TARGET_NODE_COUNT } from '@/utils/timelineDensity'
 import { DEFAULT_AI_MODEL, DEFAULT_CASCADE_MODEL } from '@/constants/models'
 import type { NarrativeKind } from '@/api/client'
 import { fieldLabel } from '@/constants/fieldLabels'
-import JobProgress from '@/components/JobProgress.vue'
 
 const props = defineProps<{
   characterId: string
   node: LifeNode | null
   profile?: Profile | null
   loading?: boolean
-  regenProgress?: number
-  regenStatus?: string
-  regenVisible?: boolean
   /** 非当前激活分支的节点，仅可阅读 */
   readOnly?: boolean
 }>()
@@ -58,7 +54,7 @@ const form = ref({
 const model = ref<AIModelId>(DEFAULT_AI_MODEL)
 const cascadeModel = ref<AIModelId>(DEFAULT_CASCADE_MODEL)
 const regenConfig = ref<TimelineConfig>({
-  target_node_count: DEFAULT_TARGET_NODE_COUNT,
+  target_node_count: MIN_TARGET_NODE_COUNT,
   start_year: 0,
   end_year: 0,
 })
@@ -99,6 +95,15 @@ watch(
   },
   { immediate: true }
 )
+
+function buildPatchFromNode(n: LifeNode) {
+  return {
+    title: n.title,
+    events: n.events,
+    thoughts: n.thoughts,
+    personality_snapshot: n.personality_snapshot,
+  }
+}
 
 function buildPatch() {
   return { ...form.value }
@@ -153,14 +158,15 @@ function syncCurrentInner() {
 }
 
 function deduceRemainingLife() {
-  if (!form.value.events.trim()) {
-    ElMessage.warning('请先填写经历后再推演后续')
+  const patch = uiMode.value === 'edit' && !props.readOnly ? buildPatch() : props.node ? buildPatchFromNode(props.node) : buildPatch()
+  if (!patch.events.trim()) {
+    ElMessage.warning('当前节点尚无经历，请先编辑填写后再推演余生')
     return
   }
   emit('save', {
     mode: 'full_cascade',
     model: cascadeModel.value,
-    patch: buildPatch(),
+    patch,
     target_node_count: regenConfig.value.target_node_count,
   })
 }
@@ -265,6 +271,25 @@ function deduceRemainingLife() {
           <el-button plain @click="openNarrative('archive')">查看档案</el-button>
         </div>
       </div>
+
+      <div v-if="profile && !readOnly" class="cascade-box">
+        <div class="cascade-head">推演余生</div>
+        <p class="cascade-hint">
+          从当前节点起新增若干人生阶段。会创建新分支并自动切换；经历与职业可在推演中逐步填写。
+        </p>
+        <ModelSelector v-model="cascadeModel" />
+        <TimelineConfigPanel
+          v-model="regenConfig"
+          :profile="profile"
+          :model="cascadeModel"
+          :anchor-year="node.year"
+          density-only
+          :disabled="loading"
+        />
+        <el-button type="warning" :loading="loading" @click="deduceRemainingLife">
+          推演余生
+        </el-button>
+      </div>
     </div>
 
     <!-- 编辑模式 -->
@@ -333,9 +358,9 @@ function deduceRemainingLife() {
       </div>
 
       <div v-if="profile" class="cascade-box">
-        <div class="cascade-head">推演后续</div>
+        <div class="cascade-head">推演余生</div>
         <p class="cascade-hint">
-          从锚点起新增若干节点（如 M=1 仅生成下一个人生阶段）。会创建新分支并自动切换；分支内寿命随推演演变，与档案原卒年无关。默认 Pro 模型。
+          从锚点起新增若干节点（如 M=1 仅生成下一个人生阶段）。会创建新分支并自动切换。
         </p>
         <ModelSelector v-model="cascadeModel" />
         <TimelineConfigPanel
@@ -347,24 +372,17 @@ function deduceRemainingLife() {
           :disabled="loading"
         />
         <el-button type="warning" :loading="loading" @click="deduceRemainingLife">
-          推演后续
+          推演余生
         </el-button>
       </div>
 
       <el-alert
-        title="「更新本节点」仅修改当前版本；只有「推演后续」才会创建新分支并在左侧图中显示分叉。"
+        title="「更新本节点」仅修改当前版本；「推演余生」会创建新分支并在左侧图中显示分叉。"
         type="info"
         :closable="false"
         show-icon
       />
     </el-form>
-
-    <JobProgress
-      :visible="!!regenVisible"
-      :progress="regenProgress ?? 0"
-      :status-text="regenStatus ?? ''"
-      title="任务进度"
-    />
   </div>
   <el-empty v-else description="点击左侧节点打开详情" />
 </template>

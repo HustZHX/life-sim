@@ -74,7 +74,6 @@ function openTimeline(tl: Timeline) {
     return
   }
   if (tl.generation_status === 'failed') {
-    ElMessage.error(tl.generation_error || '该时间轴生成失败')
     return
   }
   if (!isTimelineReady(tl)) {
@@ -82,6 +81,21 @@ function openTimeline(tl: Timeline) {
     return
   }
   router.push({ path: `/timeline/${charId}`, query: { timeline: tl.id } })
+}
+
+async function retryTimelineGeneration(tl: Timeline, event?: Event) {
+  event?.stopPropagation()
+  if (!tl.active_job?.id) {
+    ElMessage.warning('无法重试，请重新创建时间轴')
+    return
+  }
+  try {
+    await api.retryJob(tl.active_job.id)
+    ElMessage.success('已重新提交生成')
+    await load(true)
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '重试失败')
+  }
 }
 
 function createTimeline() {
@@ -218,8 +232,16 @@ onUnmounted(stopPoll)
             {{ formatDateTime(row.updated_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
+            <el-button
+              v-if="row.generation_status === 'failed'"
+              type="warning"
+              link
+              @click.stop="retryTimelineGeneration(row, $event)"
+            >
+              重试
+            </el-button>
             <el-button
               type="primary"
               link

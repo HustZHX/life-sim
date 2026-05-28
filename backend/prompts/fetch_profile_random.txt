@@ -4,17 +4,17 @@
 {
   "display_name": "姓名",
   "birth_year": 1985,
-  "death_year": 2060,
+  "death_year": 0,
   "era": "时代标签",
-  "era_background": "时代背景（含该时代影响普通人生活的大事脉络，如战乱、灾荒、政令；架空世界观则写世界观要点）",
+  "era_background": "时代背景（含该时代影响普通人生活的大事脉络；架空世界观则写世界观要点）",
   "personality_initial": "初始性格",
   "beliefs_motto": "信念与格言",
-  "experiences": "早年经历概述",
+  "experiences": "",
   "literature": "",
   "birth_place": "出生地",
   "nationality": "国籍",
   "social_class": "社会阶层",
-  "occupation": "职业",
+  "occupation": "",
   "education": "教育",
   "family_relations": "家庭关系",
   "beliefs_politics": "信仰政治",
@@ -24,4 +24,8 @@
   "death_cause": "",
   "sources_note": "此为AI虚构人物"
 }
-寿命合理（约60-90岁，虚构世界观可酌情调整）；全部中文；display_name 须与用户指定姓名一致。
+
+规则：
+- 默认生成「进行中」人生：death_year 填 0，experiences 与 occupation 留空（由后续剧情推演填写），death_cause 留空
+- 仅当用户明确指定完整一生或已去世时，才填写 death_year（合理寿命约 60–90 岁，虚构世界观可酌情调整）及 experiences、occupation
+- 全部中文；display_name 须与用户指定姓名一致

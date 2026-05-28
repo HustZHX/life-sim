@@ -181,11 +181,46 @@ type Timeline struct {
 	CurrentVersionID string             `json:"current_version_id,omitempty"`
 	NodeCount        int                `json:"node_count,omitempty"`
 	VersionCount     int                `json:"version_count,omitempty"`
+	WorldLine        *WorldLine         `json:"world_line,omitempty"`
 	GenerationStatus string             `json:"generation_status,omitempty"` // ready | generating | failed
 	GenerationError  string             `json:"generation_error,omitempty"`
 	ActiveJob        *TimelineActiveJob `json:"active_job,omitempty"`
 	CreatedAt        time.Time          `json:"created_at"`
 	UpdatedAt        time.Time          `json:"updated_at"`
+}
+
+// WorldLineEvent 世界线上的历史大事节点。
+type WorldLineEvent struct {
+	Year              int    `json:"year"`
+	Name              string `json:"name"`
+	Description       string `json:"description,omitempty"`
+	Impact            string `json:"impact,omitempty"`
+	DivergenceNote    string `json:"divergence_note,omitempty"`
+	CausedByNodeSeq   *int   `json:"caused_by_node_sequence,omitempty"`
+}
+
+// WorldLine 时间轴绑定的世界线（历史走向与天下大事）。
+type WorldLine struct {
+	TimelineID       string           `json:"timeline_id"`
+	EraSummary       string           `json:"era_summary,omitempty"`
+	HistoricalTrend  string           `json:"historical_trend"`
+	DailyLifeContext string           `json:"daily_life_context,omitempty"`
+	Events           []WorldLineEvent `json:"events"`
+	StartYear        int              `json:"start_year,omitempty"`
+	EndYear          int              `json:"end_year,omitempty"`
+	UpdatedAt        time.Time        `json:"updated_at"`
+}
+
+// WorldLineUpdateRequest 更新世界线并可选择同步到人生节点。
+type WorldLineUpdateRequest struct {
+	WorldLine    WorldLine `json:"world_line"`
+	Model        string    `json:"model"`
+	ApplyToNodes bool      `json:"apply_to_nodes"`
+}
+
+// WorldLineRefreshRequest 重算当前时间轴世界线。
+type WorldLineRefreshRequest struct {
+	Model string `json:"model"`
 }
 
 const (
@@ -220,6 +255,7 @@ type Job struct {
 
 const (
 	PatchModeFullCascade       = "full_cascade"
+	PatchModeAppendNext        = "append_next"
 	PatchModeInnerCurrent      = "inner_current"
 	PatchModeInnerSubsequent   = "inner_subsequent"
 	PatchModeDialogueImpact    = "dialogue_impact"
@@ -266,11 +302,57 @@ type PatchNodeRequest struct {
 	Mode                string `json:"mode"`
 	Model               string `json:"model"`
 	TargetNodeCount     int    `json:"target_node_count"`
+	NextNodeTitle       string `json:"next_node_title,omitempty"`
 	StepYears           int    `json:"step_years,omitempty"`
 	ConfirmedDeathYear  int    `json:"confirmed_death_year,omitempty"`
 	ConfirmedDeathCause string `json:"confirmed_death_cause,omitempty"`
 	LifespanReasoning   string `json:"lifespan_reasoning,omitempty"`
 	ChangeSummary       string `json:"change_summary,omitempty"`
+}
+
+// RollbackToNodeRequest 回退至指定节点（截断后续）
+type RollbackToNodeRequest struct {
+	ChangeSummary string `json:"change_summary,omitempty"`
+}
+
+// TimelineJobConfigSnapshot 时间轴生成任务配置快照（用于重试）
+type TimelineJobConfigSnapshot struct {
+	StepYears         int    `json:"step_years"`
+	TargetNodeCount   int    `json:"target_node_count"`
+	StartYear         int    `json:"start_year"`
+	EndYear           int    `json:"end_year"`
+	Title             string `json:"title"`
+	Instructions      string `json:"instructions"`
+	EraEventsOverride string `json:"era_events_override,omitempty"`
+	CharacterMode     string `json:"character_mode"`
+	NarrativeDensity  string `json:"narrative_density"`
+}
+
+// TimelineGenerateJobRequest timeline_generate 任务完整参数
+type TimelineGenerateJobRequest struct {
+	TimelineID string                    `json:"timeline_id"`
+	Generate   TimelineGenerateRequest   `json:"generate"`
+	Config     TimelineJobConfigSnapshot `json:"config"`
+}
+
+// PatchNodeJobRequest 节点编辑/推演任务完整参数
+type PatchNodeJobRequest struct {
+	TimelineID string           `json:"timeline_id"`
+	NodeID     string           `json:"node_id"`
+	Patch      PatchNodeRequest `json:"patch"`
+}
+
+// NarrativeChangeJobRequest 叙述变更任务完整参数
+type NarrativeChangeJobRequest struct {
+	TimelineID string                 `json:"timeline_id"`
+	Request    NarrativeChangeRequest `json:"request"`
+}
+
+// NodeNarrativeJobRequest 节点叙事任务完整参数
+type NodeNarrativeJobRequest struct {
+	NodeID  string                `json:"node_id"`
+	Kind    string                `json:"kind"`
+	Request NodeNarrativeRequest  `json:"request"`
 }
 
 // RegenerateNodeEventsRequest 根据标题重新生成节点经历
@@ -407,6 +489,7 @@ type NarrativeArtifact struct {
 	FromSequence int       `json:"from_sequence,omitempty"`
 	ToSequence   int       `json:"to_sequence,omitempty"`
 	Person       string    `json:"person,omitempty"`
+	ContentKey   string    `json:"content_key,omitempty"`
 	Content      string    `json:"content"`
 	Model        string    `json:"model,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`

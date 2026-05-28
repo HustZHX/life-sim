@@ -11,8 +11,10 @@ import {
   MIN_TARGET_NODE_COUNT,
   computeStepYears,
   effectiveDeathYear,
+  formatLivingTimelineSummary,
   formatRegenSummary,
   formatTimelineSummary,
+  isLivingProfile,
 } from '@/utils/timelineDensity'
 
 const props = defineProps<{
@@ -33,6 +35,8 @@ const loadingRecs = ref(false)
 const recommendations = ref<TimelineRecommendation[]>([])
 const selectedRecIndex = ref<number | null>(null)
 const expanded = ref(false)
+
+const livingMode = computed(() => isLivingProfile(props.profile))
 
 const yearRange = computed(() => ({
   min: props.profile.birth_year,
@@ -69,6 +73,9 @@ const configSummary = computed(() => {
       config.value.target_node_count
     )
   }
+  if (livingMode.value) {
+    return formatLivingTimelineSummary(config.value.target_node_count)
+  }
   return formatTimelineSummary(
     config.value.start_year,
     config.value.end_year,
@@ -79,9 +86,14 @@ const configSummary = computed(() => {
 watch(
   () => props.profile,
   (p) => {
-    if (!config.value.start_year) config.value.start_year = p.birth_year
-    if (!config.value.end_year || config.value.end_year <= p.birth_year) {
-      config.value.end_year = effectiveDeathYear(p)
+    if (isLivingProfile(p)) {
+      config.value.start_year = 0
+      config.value.end_year = 0
+    } else {
+      if (!config.value.start_year) config.value.start_year = p.birth_year
+      if (!config.value.end_year || config.value.end_year <= p.birth_year) {
+        config.value.end_year = effectiveDeathYear(p)
+      }
     }
     if (!config.value.target_node_count) config.value.target_node_count = DEFAULT_TARGET_NODE_COUNT
     if (!config.value.narrative_density) config.value.narrative_density = DEFAULT_NARRATIVE_DENSITY
@@ -126,7 +138,7 @@ function toggleExpanded() {
 
 <template>
   <div v-if="densityOnly" class="timeline-config density-only">
-      <div class="block-label">推演后续 · 节点数</div>
+      <div class="block-label">推演余生 · 节点数</div>
 
     <button
       type="button"
@@ -168,11 +180,21 @@ function toggleExpanded() {
 
   <div v-else class="timeline-config">
     <div class="section-head">
-      <span class="label">时间轴配置</span>
+      <span class="label">{{ livingMode ? '进行中人生' : '时间轴配置' }}</span>
       <span class="summary">{{ configSummary }}</span>
     </div>
 
+    <el-alert
+      v-if="livingMode"
+      title="人生未完结：仅选择推演节点数，经历与职业随剧情填写；起止年份由 AI 按节点安排。"
+      type="info"
+      :closable="false"
+      show-icon
+      class="living-alert"
+    />
+
     <el-button
+      v-if="!livingMode"
       type="primary"
       plain
       :loading="loadingRecs"
@@ -182,7 +204,7 @@ function toggleExpanded() {
       AI 生成推荐方案
     </el-button>
 
-    <div v-if="recommendations.length" v-loading="loadingRecs" class="rec-list">
+    <div v-if="!livingMode && recommendations.length" v-loading="loadingRecs" class="rec-list">
       <el-card
         v-for="(rec, i) in recommendations"
         :key="i"
@@ -256,8 +278,8 @@ function toggleExpanded() {
           :disabled="disabled"
         />
       </div>
-      <p class="computed-hint">跨度 {{ spanYears }} 年 → 参考间隔约 {{ computedStepYears }} 年</p>
-      <div class="form-row years">
+      <p v-if="!livingMode" class="computed-hint">跨度 {{ spanYears }} 年 → 参考间隔约 {{ computedStepYears }} 年</p>
+      <div v-if="!livingMode" class="form-row years">
         <div>
           <span class="field-label">起始年份</span>
           <el-input-number
@@ -361,6 +383,9 @@ function toggleExpanded() {
   background: #fafbfc;
   min-width: 0;
   overflow: hidden;
+}
+.living-alert {
+  margin-bottom: 12px;
 }
 .section-head {
   display: flex;

@@ -8,9 +8,9 @@
       "year": 225,
       "age": 44,
       "title": "节点标题",
-      "events": "（150～280字）场景+史实事件+后果，禁止百科腔",
-      "thoughts": "（80～150字）第一人称内心",
-      "personality_snapshot": "（60～100字）性格快照",
+      "events": "（80～150字）场景+事件+后果",
+      "thoughts": "（60～100字）第一人称内心",
+      "personality_snapshot": "（40～80字）性格快照",
       "trait_changes": [],
       "entities": { "protagonist": [], "persons": [], "places": [] },
       "scene": {}
@@ -19,6 +19,7 @@
 }
 要求：
 - 【关键】只输出恰好 M 个全新后续节点（用户会给出 M 与 anchor_sequence）；sequence 从 anchor_sequence+1 起连续递增
-- year 须大于锚点 year、单调递增；由关键事件决定间隔，勿按寿命÷M 机械切分，勿要求写到某一卒年
+- M>1 时控制单节点长度，务必输出完整闭合 JSON，不可截断
+- year 须大于锚点 year、单调递增；由关键事件决定间隔，勿要求写到某一卒年
 - 不要复制旧后续节点；须与锁定节点及锚点衔接
 - trait_changes field 用中文；entities 必填；scene 有依据才填；全部中文

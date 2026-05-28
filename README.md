@@ -68,6 +68,12 @@ npm run dev
 docker compose up --build
 ```
 
+公网部署（双重鉴权、纯 IP 访问）见 [DEPLOY.md](./DEPLOY.md)。
+
+## 鉴权（可选）
+
+设置 `AUTH_ENABLED=true` 后启用「进门密码 + 用户登录」。本地开发默认 `AUTH_ENABLED=false`，详见 `.env.example`。
+
 ## 免责声明
 
 AI 生成内容为演绎性质，不构成历史学术考证。名人资料可能存在幻觉，请以权威史料为准。

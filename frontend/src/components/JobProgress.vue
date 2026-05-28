@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { Loading } from '@element-plus/icons-vue'
+import { CircleCloseFilled, Loading } from '@element-plus/icons-vue'
 
 defineProps<{
   visible: boolean
   progress: number
   statusText: string
   title?: string
+  failed?: boolean
+  errorText?: string
+  retrying?: boolean
+}>()
+
+defineEmits<{
+  retry: []
+  dismiss: []
 }>()
 </script>
 
@@ -13,23 +21,35 @@ defineProps<{
   <Teleport to="body">
     <Transition name="job-float">
       <div v-if="visible" class="job-progress-float" role="status" aria-live="polite">
-        <div class="job-progress-inner">
-          <el-icon class="spinner" :size="22">
+        <div class="job-progress-inner" :class="{ 'job-progress-inner--failed': failed }">
+          <el-icon v-if="failed" class="fail-icon" :size="22">
+            <CircleCloseFilled />
+          </el-icon>
+          <el-icon v-else class="spinner" :size="22">
             <Loading />
           </el-icon>
           <div class="job-body">
             <div class="job-head">
-              <span class="job-title">{{ title || '任务进行中' }}</span>
-              <span class="job-percent">{{ progress }}%</span>
+              <span class="job-title">{{ failed ? '任务失败' : title || '任务进行中' }}</span>
+              <span v-if="!failed" class="job-percent">{{ progress }}%</span>
             </div>
-            <p v-if="statusText" class="status">{{ statusText }}</p>
+            <p v-if="failed && errorText" class="error-text">{{ errorText }}</p>
+            <p v-else-if="statusText" class="status">{{ statusText }}</p>
             <el-progress
+              v-if="!failed"
               :percentage="progress"
               :stroke-width="6"
               :show-text="false"
               striped
               striped-flow
             />
+            <el-progress v-else :percentage="progress" status="exception" :stroke-width="6" :show-text="false" />
+            <div v-if="failed" class="job-actions">
+              <el-button size="small" type="primary" :loading="retrying" @click="$emit('retry')">
+                重试
+              </el-button>
+              <el-button size="small" @click="$emit('dismiss')">关闭</el-button>
+            </div>
           </div>
         </div>
       </div>
@@ -43,7 +63,7 @@ defineProps<{
   top: 64px;
   left: 16px;
   z-index: 2000;
-  max-width: min(320px, calc(100vw - 32px));
+  max-width: min(360px, calc(100vw - 32px));
 }
 
 .job-progress-inner {
@@ -57,11 +77,22 @@ defineProps<{
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
 }
 
+.job-progress-inner--failed {
+  border-color: #fde2e2;
+  background: #fef0f0;
+}
+
 .spinner {
   flex-shrink: 0;
   margin-top: 2px;
   color: #409eff;
   animation: spin 1s linear infinite;
+}
+
+.fail-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: #f56c6c;
 }
 
 .job-body {
@@ -95,6 +126,20 @@ defineProps<{
   font-size: 0.8rem;
   color: #606266;
   line-height: 1.4;
+}
+
+.error-text {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  color: #f56c6c;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.job-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 @keyframes spin {

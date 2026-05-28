@@ -114,6 +114,15 @@ func buildTimelineUserWithoutProfile(cfg timelineJobConfig, span int) string {
 	return appendTimelineExtras(user, cfg)
 }
 
+func buildTimelineChunkUserWithoutProfile(cfg timelineJobConfig, chunk timelineChunkSpec, span int) string {
+	user := fmt.Sprintf(
+		"请根据上文人物档案生成时间轴。【第 %d/%d 段】目标约 %d 个节点，本段区间 start_year=%d, end_year=%d（全轴跨度 %d 年），sequence 从 %d 起递增，参考间隔约 %d 年",
+		chunk.ChunkIndex+1, chunk.TotalChunks, chunk.TargetNodes,
+		chunk.StartYear, chunk.EndYear, span, chunk.SequenceStart, cfg.StepYears,
+	)
+	return appendTimelineExtras(user, cfg)
+}
+
 func buildTimelineChunkUser(profileJSON string, cfg timelineJobConfig, chunk timelineChunkSpec, span int) string {
 	user := fmt.Sprintf(
 		"【第 %d/%d 段】目标约 %d 个节点，本段区间 start_year=%d, end_year=%d（全轴跨度 %d 年），sequence 从 %d 起递增，参考间隔约 %d 年\n人物档案：\n%s",

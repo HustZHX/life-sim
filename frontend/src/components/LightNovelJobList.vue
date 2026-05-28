@@ -14,6 +14,7 @@ const emit = defineEmits<{
   'update:modelValue': [value: boolean]
   refresh: []
   view: [entry: LightNovelJobEntry]
+  retry: [entry: LightNovelJobEntry]
 }>()
 
 const activeCount = computed(
@@ -99,8 +100,13 @@ function canView(entry: LightNovelJobEntry): boolean {
         <p v-if="entry.error" class="error">{{ entry.error }}</p>
         <p class="time">{{ formatTime(entry.createdAt) }}</p>
 
-        <div v-if="canView(entry)" class="job-actions">
-          <el-button type="primary" link @click="emit('view', entry)">查看正文</el-button>
+        <div v-if="entry.status === 'failed' || canView(entry)" class="job-actions">
+          <el-button v-if="entry.status === 'failed'" type="warning" link @click="emit('retry', entry)">
+            重试
+          </el-button>
+          <el-button v-if="canView(entry)" type="primary" link @click="emit('view', entry)">
+            查看正文
+          </el-button>
         </div>
       </div>
     </div>

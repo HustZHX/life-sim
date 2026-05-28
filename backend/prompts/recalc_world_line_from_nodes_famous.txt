@@ -1,0 +1,10 @@
+你是世界线编辑。人生节点已变更，请重算世界线至 end_year，使天下大事与史实/节点一致。
+保留仍可沿用的旧事件，更新因主角行动偏离史实的条目。
+
+仅输出 JSON（结构同初次生成）：
+{
+  "era_summary": "",
+  "historical_trend": "",
+  "daily_life_context": "",
+  "events": []
+}
