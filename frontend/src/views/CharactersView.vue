@@ -43,11 +43,24 @@ async function load() {
 }
 
 function openCharacter(row: HistoryItem) {
-  if (row.status === 'profile_ready' || row.status === 'timeline_ready') {
-    router.push(`/characters/${row.id}`)
+  const isGame = row.play_style === 'game'
+  if (row.status === 'timeline_ready') {
+    router.push(isGame ? `/game/timeline/${row.id}` : `/characters/${row.id}`)
+    return
+  }
+  if (row.status === 'profile_ready') {
+    if (isGame) {
+      router.push(row.mode === 'famous' ? '/game/famous' : '/game/random')
+    } else {
+      router.push(`/characters/${row.id}`)
+    }
     return
   }
   if (row.status === 'confirmed' || row.status === 'resolved') {
+    if (isGame && row.mode === 'famous') {
+      router.push('/game/famous')
+      return
+    }
     router.push(row.mode === 'famous' ? `/famous?id=${row.id}` : `/random?id=${row.id}`)
     return
   }
@@ -65,6 +78,7 @@ onMounted(load)
         <p class="hint">一个人物可拥有多条独立时间轴，点击进入查看该人物的所有时间轴</p>
       </div>
       <div class="head-actions">
+        <el-button @click="router.push('/game')">人生游戏</el-button>
         <el-button @click="router.push('/')">新建人物</el-button>
       </div>
     </div>
@@ -102,6 +116,7 @@ onMounted(load)
             <el-tag size="small" :type="row.mode === 'famous' ? 'primary' : 'success'">
               {{ modeLabel[row.mode] || row.mode }}
             </el-tag>
+            <el-tag v-if="row.play_style === 'game'" size="small" type="warning">游戏</el-tag>
           </div>
           <div class="card-meta">
             <span v-if="row.era" class="meta-item">{{ row.era }}</span>
@@ -146,10 +161,13 @@ onMounted(load)
           <strong>{{ row.display_name || '未命名' }}</strong>
         </template>
       </el-table-column>
-      <el-table-column label="类型" width="100">
+      <el-table-column label="类型" width="140">
         <template #default="{ row }">
           <el-tag size="small" :type="row.mode === 'famous' ? 'primary' : 'success'">
             {{ modeLabel[row.mode] || row.mode }}
+          </el-tag>
+          <el-tag v-if="row.play_style === 'game'" size="small" type="warning" style="margin-left: 4px">
+            游戏
           </el-tag>
         </template>
       </el-table-column>

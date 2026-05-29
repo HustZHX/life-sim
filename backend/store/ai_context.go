@@ -84,6 +84,44 @@ func ProfileJSONTimeline(p *model.Profile) string {
 	return string(b)
 }
 
+// MarshalGameConfigForPrompt 游戏模式配置（时期、开局年份等）。
+func MarshalGameConfigForPrompt(cfg *model.GameConfig) string {
+	if cfg == nil {
+		return "{}"
+	}
+	b, _ := json.Marshal(cfg)
+	return string(b)
+}
+
+// MarshalGameNodeForChoices 当前节点上下文（供抉择生成）。
+func MarshalGameNodeForChoices(n *model.LifeNode) string {
+	if n == nil {
+		return "{}"
+	}
+	events := TruncateRunes(n.Events, 480)
+	b, _ := json.Marshal(map[string]any{
+		"sequence":             n.Sequence,
+		"year":                 n.Year,
+		"age":                  n.Age,
+		"title":                n.Title,
+		"events":               events,
+		"personality_snapshot": TruncateRunes(n.PersonalitySnapshot, 200),
+	})
+	return string(b)
+}
+
+// TruncateRunes 按 rune 截断字符串。
+func TruncateRunes(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "…"
+}
+
 // ProfileJSONInner 内心/寿命重算精简档案。
 func ProfileJSONInner(p *model.Profile) string {
 	b, _ := json.Marshal(profileFromInner(p))

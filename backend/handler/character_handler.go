@@ -202,7 +202,13 @@ func (h *CharacterHandler) GetTimeline(c *gin.Context) {
 		Fail(c, http.StatusNotFound, 404, err.Error())
 		return
 	}
-	OK(c, gin.H{"timeline": tl, "version": ver, "nodes": nodes})
+	resp := gin.H{"timeline": tl, "version": ver, "nodes": nodes}
+	if ch, err := h.svc.GetCharacter(id); err == nil && ch.PlayStyle == model.PlayStyleGame && ver != nil {
+		if choices, err := h.svc.ListGameChoiceDisplays(ver.ID); err == nil && len(choices) > 0 {
+			resp["game_choices"] = choices
+		}
+	}
+	OK(c, resp)
 }
 
 func (h *CharacterHandler) ListTimelines(c *gin.Context) {
@@ -510,6 +516,62 @@ func (h *CharacterHandler) ListLightNovelJobs(c *gin.Context) {
 		}
 	}
 	jobs, err := h.narr.ListLightNovelJobs(charID, limit)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, gin.H{"jobs": jobs})
+}
+
+func (h *CharacterHandler) ListSavedChronicles(c *gin.Context) {
+	charID := c.Query("character_id")
+	items, err := h.narr.ListSavedChronicles(charID)
+	if err != nil {
+		Fail(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	OK(c, gin.H{"items": items, "branch": config.CurrentGitBranch()})
+}
+
+func (h *CharacterHandler) GetSavedChronicle(c *gin.Context) {
+	id := c.Param("id")
+	entry, err := h.narr.GetSavedChronicle(id)
+	if err != nil {
+		if strings.Contains(err.Error(), "不存在") {
+			Fail(c, http.StatusNotFound, 404, err.Error())
+			return
+		}
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	OK(c, entry)
+}
+
+func (h *CharacterHandler) GenerateChronicle(c *gin.Context) {
+	charID := c.Param("id")
+	var req model.ChronicleRequest
+	_ = c.ShouldBindJSON(&req)
+	job, cached, err := h.narr.StartChronicleJob(c.Request.Context(), charID, req)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	if cached != nil {
+		OK(c, gin.H{"artifact": cached, "cached": true})
+		return
+	}
+	OK(c, job)
+}
+
+func (h *CharacterHandler) ListChronicleJobs(c *gin.Context) {
+	charID := c.Param("id")
+	limit := 30
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	jobs, err := h.narr.ListChronicleJobs(charID, limit)
 	if err != nil {
 		Fail(c, http.StatusInternalServerError, 500, err.Error())
 		return

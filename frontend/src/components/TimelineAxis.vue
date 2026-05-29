@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Plus } from '@element-plus/icons-vue'
-import type { LifeNode, Profile, WorldLine, WorldLineEvent } from '@/api/client'
+import { Loading, Plus } from '@element-plus/icons-vue'
+import type { GameNodeChoiceDisplay, LifeNode, Profile, WorldLine, WorldLineEvent } from '@/api/client'
 import { fieldLabel } from '@/constants/fieldLabels'
 import { entityContextFromNode } from '@/utils/textEntities'
 import { isLivingProfile } from '@/utils/timelineDensity'
@@ -17,6 +17,15 @@ const props = defineProps<{
   appendDisabled?: boolean
   /** 是否允许回退至此（当前激活分支且未在任务中） */
   rollbackEnabled?: boolean
+  /** 游戏模式：末节点始终显示「+」，不依赖 isLivingProfile */
+  alwaysShowAppend?: boolean
+  /** 末节点按钮文案 */
+  appendButtonLabel?: string
+  /** 游戏模式：已选抉择（显示在锚定节点与下一节点之间） */
+  gameChoices?: GameNodeChoiceDisplay[]
+  /** 时间轴末尾：世界线/抉择推演进行中 */
+  tailSimulating?: boolean
+  tailSimulatingLabel?: string
 }>()
 
 const emit = defineEmits<{
@@ -25,9 +34,14 @@ const emit = defineEmits<{
   rollback: [node: LifeNode]
 }>()
 
-const showAppendSlot = computed(
-  () => !!props.profile && isLivingProfile(props.profile) && props.nodes.length > 0
-)
+const showAppendSlot = computed(() => {
+  if (props.nodes.length === 0) return false
+  if (props.alwaysShowAppend) return true
+  return !!props.profile && isLivingProfile(props.profile)
+})
+
+const appendLabel = computed(() => props.appendButtonLabel || '继续推演')
+const worldSimLabel = computed(() => props.tailSimulatingLabel || '世界模拟中')
 
 const expandedIds = ref<Set<string>>(new Set())
 const expandedWorldIds = ref<Set<string>>(new Set())
@@ -94,6 +108,12 @@ const maxSequence = computed(() => {
 function canRollbackTo(node: LifeNode) {
   return !!props.rollbackEnabled && node.sequence < maxSequence.value
 }
+
+function choiceAfterNode(nodeId: string): string | null {
+  const hit = props.gameChoices?.find((c) => c.node_id === nodeId)
+  const text = hit?.display_text?.trim()
+  return text || null
+}
 </script>
 
 <template>
@@ -104,7 +124,8 @@ function canRollbackTo(node: LifeNode) {
     </div>
 
     <div class="axis-list">
-      <div v-for="item in axisItems" :key="item.id" class="axis-row">
+      <template v-for="item in axisItems" :key="item.id">
+      <div class="axis-row">
         <div class="axis-col axis-col--world">
           <el-card
             v-if="item.kind === 'world'"
@@ -230,21 +251,60 @@ function canRollbackTo(node: LifeNode) {
         </div>
       </div>
 
-      <div v-if="showAppendSlot" class="axis-row axis-row--append">
+      <div
+        v-if="item.kind === 'node' && choiceAfterNode(item.node.id)"
+        class="axis-row axis-row--choice"
+      >
         <div class="axis-col axis-col--world" />
-        <div class="axis-mid" aria-hidden="true">
-          <div class="axis-dot axis-dot--append" />
+        <div class="axis-mid axis-mid--choice" aria-hidden="true">
+          <div class="axis-dot axis-dot--choice" />
         </div>
         <div class="axis-col axis-col--node">
+          <div class="game-choice-bridge" role="note">
+            <span class="game-choice-bridge__label">人生抉择</span>
+            <p class="game-choice-bridge__text">{{ choiceAfterNode(item.node.id) }}</p>
+          </div>
+        </div>
+      </div>
+      </template>
+
+      <div
+        v-if="showAppendSlot"
+        class="axis-row"
+        :class="tailSimulating ? 'axis-row--world-sim' : 'axis-row--append'"
+      >
+        <div class="axis-col axis-col--world">
+          <div v-if="tailSimulating" class="world-sim-loading" role="status" aria-live="polite">
+            <el-icon class="world-sim-loading__icon is-loading" :size="20">
+              <Loading />
+            </el-icon>
+            <div class="world-sim-loading__body">
+              <span class="world-sim-loading__title">{{ worldSimLabel }}</span>
+              <span class="world-sim-loading__sub">正在根据你的抉择推演世界线与下一人生阶段…</span>
+            </div>
+          </div>
+        </div>
+        <div class="axis-mid" aria-hidden="true">
+          <div
+            class="axis-dot"
+            :class="tailSimulating ? 'axis-dot--simulating' : 'axis-dot--append'"
+          />
+        </div>
+        <div class="axis-col axis-col--node">
+          <div v-if="tailSimulating" class="node-sim-placeholder">
+            <el-icon class="is-loading" :size="18"><Loading /></el-icon>
+            <span>人生推演中</span>
+          </div>
           <button
+            v-else
             type="button"
             class="append-next-btn"
             :disabled="appendDisabled"
-            :title="appendDisabled ? '请等待当前任务完成' : '继续推演下一个节点'"
+            :title="appendDisabled ? '请等待当前任务完成' : appendLabel"
             @click="emit('append')"
           >
             <el-icon :size="22"><Plus /></el-icon>
-            <span>继续推演</span>
+            <span>{{ appendLabel }}</span>
           </button>
         </div>
       </div>
@@ -312,14 +372,19 @@ function canRollbackTo(node: LifeNode) {
 .axis-list {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 0;
 }
 
 .axis-row {
   display: grid;
   grid-template-columns: minmax(180px, 0.9fr) 56px minmax(360px, 1.4fr);
   column-gap: 12px;
-  align-items: start;
+  align-items: stretch;
+  padding-bottom: 16px;
+}
+
+.axis-row:last-child {
+  padding-bottom: 0;
 }
 
 .axis-col {
@@ -344,17 +409,28 @@ function canRollbackTo(node: LifeNode) {
   display: flex;
   flex-direction: column;
   align-items: center;
+  align-self: stretch;
 }
 
 .axis-mid::before {
   content: '';
   position: absolute;
-  top: -16px;
+  top: 0;
   bottom: -16px;
   left: 50%;
   transform: translateX(-50%);
   width: 2px;
   background: #e5e7eb;
+  z-index: 0;
+}
+
+.axis-row:first-child .axis-mid::before {
+  top: 10px;
+}
+
+.axis-row:last-child .axis-mid::before,
+.axis-row--append .axis-mid::before {
+  bottom: 0;
 }
 
 .axis-dot {
@@ -366,10 +442,52 @@ function canRollbackTo(node: LifeNode) {
   background: #ffffff;
   border: 2px solid #67c23a;
   margin-top: 4px;
+  flex-shrink: 0;
 }
 
 .axis-dot--append {
   border-color: #909399;
+}
+
+.axis-row--choice {
+  padding-bottom: 4px;
+}
+
+.axis-mid--choice::before {
+  top: 0;
+  bottom: 0;
+}
+
+.axis-dot--choice {
+  width: 10px;
+  height: 10px;
+  border-color: #409eff;
+  background: #ecf5ff;
+}
+
+.game-choice-bridge {
+  margin: 0 0 8px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px dashed #b3d8ff;
+  background: linear-gradient(135deg, #f5faff 0%, #ecf5ff 100%);
+}
+
+.game-choice-bridge__label {
+  display: inline-block;
+  margin-bottom: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #409eff;
+  text-transform: uppercase;
+}
+
+.game-choice-bridge__text {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: #303133;
 }
 
 .axis-timestamp {
@@ -456,13 +574,14 @@ function canRollbackTo(node: LifeNode) {
 }
 
 @media (max-width: 960px) {
-  .axis-list {
-    gap: 12px;
-  }
-
   .axis-row {
     grid-template-columns: 24px 1fr;
     column-gap: 10px;
+    padding-bottom: 12px;
+  }
+
+  .axis-mid::before {
+    bottom: -12px;
   }
 
   .axis-col--world,
@@ -485,9 +604,18 @@ function canRollbackTo(node: LifeNode) {
 
   .axis-mid::before {
     top: 0;
-    bottom: 0;
+    bottom: -12px;
     left: 12px;
     transform: none;
+  }
+
+  .axis-row:first-child .axis-mid::before {
+    top: 8px;
+  }
+
+  .axis-row:last-child .axis-mid::before,
+  .axis-row--append .axis-mid::before {
+    bottom: 0;
   }
 
   .axis-dot {
@@ -612,5 +740,77 @@ function canRollbackTo(node: LifeNode) {
   cursor: not-allowed;
   opacity: 0.55;
   color: #909399;
+}
+
+.axis-row--world-sim .axis-mid::before {
+  bottom: 0;
+}
+
+.axis-dot--simulating {
+  border-color: #67c23a;
+  background: #f0f9eb;
+  animation: axis-dot-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes axis-dot-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(103, 194, 58, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(103, 194, 58, 0);
+  }
+}
+
+.world-sim-loading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 56px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid #e1f3d8;
+  border-left: 3px solid #67c23a;
+  background: linear-gradient(135deg, #f6ffed 0%, #fafafa 100%);
+}
+
+.world-sim-loading__icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: #67c23a;
+}
+
+.world-sim-loading__body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.world-sim-loading__title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #529b2e;
+}
+
+.world-sim-loading__sub {
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #909399;
+}
+
+.node-sim-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 56px;
+  padding: 12px 16px;
+  border: 2px dashed #c0c4cc;
+  border-radius: 8px;
+  background: #fafbfc;
+  color: #909399;
+  font-size: 0.88rem;
 }
 </style>

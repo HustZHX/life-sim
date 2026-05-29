@@ -16,6 +16,8 @@ export function narrativeKindLabel(kind: NarrativeKind): string {
   switch (kind) {
     case 'light_novel':
       return '轻小说'
+    case 'chronicle':
+      return '史书'
     case 'diary':
       return '日记'
     case 'letter':
@@ -52,7 +54,7 @@ export interface NodeNarrativeContext {
   characterId: string
   nodeId: string
   versionId: string
-  kind: Exclude<NarrativeKind, 'light_novel'>
+  kind: Exclude<NarrativeKind, 'light_novel' | 'chronicle'>
   model: AIModelId
   nodeLabel?: string
 }
@@ -158,7 +160,7 @@ export function useNarrativeGenerate() {
   async function openNodeNarrative(
     characterId: string,
     node: LifeNode,
-    kind: Exclude<NarrativeKind, 'light_novel'>,
+    kind: Exclude<NarrativeKind, 'light_novel' | 'chronicle'>,
     model: AIModelId = DEFAULT_AI_MODEL
   ) {
     await generateNodeNarrative({

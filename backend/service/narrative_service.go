@@ -135,6 +135,70 @@ func (s *NarrativeService) ListLightNovelJobs(characterID string, limit int) ([]
 	return s.store.ListJobsByCharacterAndType(characterID, "narrative_light_novel", limit)
 }
 
+func (s *NarrativeService) ListSavedChronicles(characterID string) ([]model.SavedChronicleMeta, error) {
+	dir := config.ResolveChroniclesDir()
+	return store.ListChronicleFiles(dir, characterID)
+}
+
+func (s *NarrativeService) GetSavedChronicle(id string) (*model.SavedChronicle, error) {
+	dir := config.ResolveChroniclesDir()
+	return store.GetChronicleFile(dir, id)
+}
+
+func (s *NarrativeService) StartChronicleJob(ctx context.Context, characterID string, req model.ChronicleRequest) (*model.Job, *model.NarrativeArtifact, error) {
+	if req.VersionID == "" {
+		return nil, nil, fmt.Errorf("缺少 version_id")
+	}
+	if req.FromSequence > req.ToSequence {
+		return nil, nil, fmt.Errorf("节点区间无效")
+	}
+
+	ch, err := s.store.GetCharacter(characterID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	nodes, err := s.loadNodesInRange(req.VersionID, req.FromSequence, req.ToSequence)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(nodes) == 0 {
+		return nil, nil, fmt.Errorf("选定区间无节点")
+	}
+
+	q := model.NarrativeArtifactQuery{
+		VersionID: req.VersionID, Kind: model.NarrativeKindChronicle,
+		FromSequence: req.FromSequence, ToSequence: req.ToSequence,
+	}
+	contentKey := store.NarrativeContentKey(q.Kind, nodes, "")
+	if !req.Force {
+		if cached, err := s.lookupNarrativeCache(characterID, q, contentKey); err == nil {
+			return nil, s.withVersionID(cached, req.VersionID), nil
+		}
+	} else {
+		s.purgeNarrativeCache(q, contentKey)
+	}
+
+	modelID := ai.NormalizeModelID(req.Model)
+	if _, err := s.resolveAPIModel(modelID); err != nil {
+		return nil, nil, err
+	}
+
+	reqJSON, _ := json.Marshal(req)
+	job, err := s.store.CreateJobWithRequest(characterID, "narrative_chronicle", modelID, string(reqJSON))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	go s.runChronicleJob(context.Background(), job.ID, characterID, ch.Mode, req, nodes, q)
+
+	return job, nil, nil
+}
+
+func (s *NarrativeService) ListChronicleJobs(characterID string, limit int) ([]model.Job, error) {
+	return s.store.ListJobsByCharacterAndType(characterID, "narrative_chronicle", limit)
+}
+
 func (s *NarrativeService) StartNodeNarrativeJob(ctx context.Context, characterID, nodeID, kind string, req model.NodeNarrativeRequest) (*model.Job, *model.NarrativeArtifact, error) {
 	switch kind {
 	case model.NarrativeKindDiary, model.NarrativeKindLetter, model.NarrativeKindArchive:
@@ -311,6 +375,123 @@ func (s *NarrativeService) runLightNovelJob(ctx context.Context, jobID, characte
 	job.Status = model.JobCompleted
 	job.Progress = 100
 	job.StageText = "撰写完成"
+	job.Result = string(result)
+	_ = s.store.UpdateJob(job)
+}
+
+func (s *NarrativeService) runChronicleJob(ctx context.Context, jobID, characterID, characterMode string, req model.ChronicleRequest, nodes []model.LifeNode, q model.NarrativeArtifactQuery) {
+	job, _ := s.store.GetJob(jobID)
+	job.Status = model.JobRunning
+	job.Progress = 5
+	job.StageText = "正在准备史书素材…"
+	_ = s.store.UpdateJob(job)
+
+	profile, err := s.store.GetProfile(characterID)
+	if err != nil {
+		s.failNarrativeJob(job, err.Error())
+		return
+	}
+
+	ver, err := s.store.GetVersion(req.VersionID)
+	if err != nil {
+		s.failNarrativeJob(job, err.Error())
+		return
+	}
+	wlJSON := "{}"
+	if wl, err := s.store.GetWorldLine(ver.TimelineID); err == nil && wl != nil {
+		wlJSON = store.MarshalWorldLineForPrompt(wl)
+	}
+
+	promptName := "generate_chronicle_random.txt"
+	if characterMode == model.ModeFamous {
+		promptName = "generate_chronicle_famous.txt"
+	}
+	system, err := s.ai.LoadPrompt(promptName)
+	if err != nil {
+		s.failNarrativeJob(job, err.Error())
+		return
+	}
+
+	apiModel, err := s.resolveAPIModel(job.Model)
+	if err != nil {
+		s.failNarrativeJob(job, err.Error())
+		return
+	}
+
+	profileJSON := store.ProfileJSONTimeline(profile)
+	batches := store.BatchLifeNodeSlices(nodes, store.ExpandBatchSize())
+	var parts []string
+	prevTail := ""
+
+	for i, batch := range batches {
+		progress := 10 + (i * 80 / maxInt(len(batches), 1))
+		setJobStage(s.store, jobID, progress, fmt.Sprintf("正在编纂第 %d/%d 篇…", i+1, len(batches)))
+
+		user := fmt.Sprintf("人物档案：\n%s\n\n世界线：\n%s\n\n本篇章涵盖的人生节点：\n%s",
+			profileJSON, wlJSON, store.MarshalNodesForNarrative(batch))
+		if prevTail != "" {
+			user += fmt.Sprintf("\n\n上一篇末尾（须自然衔接）：\n%s", prevTail)
+		}
+		if i == 0 {
+			user += fmt.Sprintf("\n\n这是全书第 1/%d 篇，请从选定区间的起点写起。", len(batches))
+		}
+		if i == len(batches)-1 && len(batches) > 1 {
+			user += "\n\n这是最后一篇，须收束本区间。"
+		}
+
+		done := make(chan struct{})
+		go tickJobProgress(s.store, jobID, progress+1, progress+75/maxInt(len(batches), 1), done)
+
+		raw, err := s.ai.ChatJSONModel(ctx, apiModel, system, user)
+		close(done)
+		if err != nil {
+			s.failNarrativeJob(job, fmt.Sprintf("第 %d 篇生成失败: %v", i+1, err))
+			return
+		}
+
+		chapter, err := store.ParseLightNovelChapter(raw)
+		if err != nil {
+			s.failNarrativeJob(job, err.Error())
+			return
+		}
+		formatted := store.FormatLightNovelChapter(chapter.Title, chapter.Content)
+		parts = append(parts, formatted)
+		prevTail = store.TailRunes(chapter.Content, 300)
+	}
+
+	content := strings.Join(parts, "\n\n---\n\n")
+	contentKey := store.NarrativeContentKey(q.Kind, nodes, "")
+	artifact := &model.NarrativeArtifact{
+		CharacterID: characterID, VersionID: q.VersionID, Kind: q.Kind,
+		FromSequence: q.FromSequence, ToSequence: q.ToSequence,
+		ContentKey: contentKey, Content: content, Model: job.Model,
+	}
+	if err := s.store.SaveNarrativeArtifact(artifact); err != nil {
+		s.failNarrativeJob(job, err.Error())
+		return
+	}
+
+	branch := config.CurrentGitBranch()
+	savedID, saveErr := store.SaveChronicleFile(config.ResolveChroniclesDir(), model.SavedChronicle{
+		CharacterID:  characterID,
+		DisplayName:  profile.DisplayName,
+		VersionID:    q.VersionID,
+		FromSequence: q.FromSequence,
+		ToSequence:   q.ToSequence,
+		Model:        job.Model,
+		Branch:       branch,
+		Content:      content,
+	})
+	if saveErr != nil {
+		log.Printf("史书落盘失败: %v", saveErr)
+	}
+
+	result, _ := json.Marshal(map[string]interface{}{
+		"artifact_id": artifact.ID, "content": content, "cached": false, "saved_file_id": savedID,
+	})
+	job.Status = model.JobCompleted
+	job.Progress = 100
+	job.StageText = "编纂完成"
 	job.Result = string(result)
 	_ = s.store.UpdateJob(job)
 }

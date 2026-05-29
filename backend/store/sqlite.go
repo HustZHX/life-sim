@@ -230,36 +230,79 @@ CREATE TABLE IF NOT EXISTS users (
 	if err != nil {
 		return err
 	}
+	_, _ = s.db.Exec(`ALTER TABLE characters ADD COLUMN play_style TEXT DEFAULT 'simulation'`)
+	_, _ = s.db.Exec(`ALTER TABLE characters ADD COLUMN game_config_json TEXT DEFAULT '{}'`)
+	_, err = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS game_profile_snapshots (
+  character_id TEXT NOT NULL,
+  timeline_id TEXT NOT NULL,
+  max_sequence INTEGER NOT NULL,
+  profile_json TEXT NOT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY (timeline_id, max_sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_game_profile_snap_char ON game_profile_snapshots(character_id);
+CREATE TABLE IF NOT EXISTS game_node_choices (
+  node_id TEXT NOT NULL,
+  version_id TEXT NOT NULL,
+  character_id TEXT NOT NULL,
+  node_sequence INTEGER NOT NULL DEFAULT 0,
+  choices_json TEXT NOT NULL DEFAULT '[]',
+  chosen_id TEXT DEFAULT '',
+  custom_text TEXT DEFAULT '',
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (node_id, version_id)
+);
+CREATE INDEX IF NOT EXISTS idx_game_node_choices_char ON game_node_choices(character_id, node_sequence);
+`)
+	if err != nil {
+		return err
+	}
 	return s.migrateLegacyTimelines()
 }
 
 func (s *Store) CreateCharacter(mode string) (*model.Character, error) {
+	return s.CreateCharacterWithStyle(mode, model.PlayStyleSimulation)
+}
+
+func (s *Store) CreateCharacterWithStyle(mode, playStyle string) (*model.Character, error) {
+	if playStyle == "" {
+		playStyle = model.PlayStyleSimulation
+	}
 	now := time.Now()
 	c := &model.Character{
 		ID:        uuid.New().String(),
 		Mode:      mode,
+		PlayStyle: playStyle,
 		Status:    model.StatusDraft,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO characters (id, mode, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		c.ID, c.Mode, c.Status, c.CreatedAt, c.UpdatedAt,
+		`INSERT INTO characters (id, mode, play_style, game_config_json, status, created_at, updated_at) VALUES (?, ?, ?, '{}', ?, ?, ?)`,
+		c.ID, c.Mode, c.PlayStyle, c.Status, c.CreatedAt, c.UpdatedAt,
 	)
 	return c, err
 }
 
 func (s *Store) GetCharacter(id string) (*model.Character, error) {
 	row := s.db.QueryRow(
-		`SELECT id, mode, display_name, status, resolve_query, confirmed_identity, current_version_id, COALESCE(current_timeline_id,''), created_at, updated_at FROM characters WHERE id = ?`,
+		`SELECT id, mode, COALESCE(play_style,'simulation'), COALESCE(game_config_json,'{}'),
+		        display_name, status, resolve_query, confirmed_identity, current_version_id, COALESCE(current_timeline_id,''), created_at, updated_at
+		 FROM characters WHERE id = ?`,
 		id,
 	)
 	var c model.Character
-	var created, updated string
-	err := row.Scan(&c.ID, &c.Mode, &c.DisplayName, &c.Status, &c.ResolveQuery, &c.ConfirmedIdentity, &c.CurrentVersionID, &c.CurrentTimelineID, &created, &updated)
+	var created, updated, gameConfigJSON string
+	err := row.Scan(&c.ID, &c.Mode, &c.PlayStyle, &gameConfigJSON, &c.DisplayName, &c.Status, &c.ResolveQuery, &c.ConfirmedIdentity, &c.CurrentVersionID, &c.CurrentTimelineID, &created, &updated)
 	if err != nil {
 		return nil, err
 	}
+	if c.PlayStyle == "" {
+		c.PlayStyle = model.PlayStyleSimulation
+	}
+	c.GameConfig = decodeGameConfig(gameConfigJSON)
 	c.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	if c.CreatedAt.IsZero() {
 		c.CreatedAt, _ = time.Parse("2006-01-02 15:04:05.999999999-07:00", created)
@@ -269,6 +312,29 @@ func (s *Store) GetCharacter(id string) (*model.Character, error) {
 		c.UpdatedAt, _ = time.Parse("2006-01-02 15:04:05.999999999-07:00", updated)
 	}
 	return &c, nil
+}
+
+func decodeGameConfig(raw string) *model.GameConfig {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "{}" {
+		return &model.GameConfig{}
+	}
+	var cfg model.GameConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return &model.GameConfig{}
+	}
+	return &cfg
+}
+
+func encodeGameConfig(cfg *model.GameConfig) string {
+	if cfg == nil {
+		return "{}"
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 func parseDBTime(s string) time.Time {
@@ -298,7 +364,7 @@ func (s *Store) ListCharacterHistory(limit int) ([]model.CharacterHistoryItem, e
 		limit = 100
 	}
 	rows, err := s.db.Query(`
-		SELECT c.id, c.mode, c.display_name, c.status, c.resolve_query, c.current_version_id, c.created_at, c.updated_at,
+		SELECT c.id, c.mode, COALESCE(c.play_style,'simulation'), c.display_name, c.status, c.resolve_query, c.current_version_id, c.created_at, c.updated_at,
 		       COALESCE(json_extract(p.data_json, '$.era'), ''),
 		       COALESCE(json_extract(p.data_json, '$.birth_year'), 0),
 		       COALESCE(json_extract(p.data_json, '$.death_year'), 0),
@@ -322,7 +388,7 @@ func (s *Store) ListCharacterHistory(limit int) ([]model.CharacterHistoryItem, e
 		var item model.CharacterHistoryItem
 		var created, updated, profileName string
 		if err := rows.Scan(
-			&item.ID, &item.Mode, &item.DisplayName, &item.Status, &item.ResolveQuery,
+			&item.ID, &item.Mode, &item.PlayStyle, &item.DisplayName, &item.Status, &item.ResolveQuery,
 			&item.CurrentVersionID, &created, &updated,
 			&item.Era, &item.BirthYear, &item.DeathYear, &profileName,
 			&item.NodeCount, &item.TimelineCount,
@@ -347,9 +413,13 @@ func (s *Store) ListCharacterHistory(limit int) ([]model.CharacterHistoryItem, e
 
 func (s *Store) UpdateCharacter(c *model.Character) error {
 	c.UpdatedAt = time.Now()
+	playStyle := c.PlayStyle
+	if playStyle == "" {
+		playStyle = model.PlayStyleSimulation
+	}
 	_, err := s.db.Exec(
-		`UPDATE characters SET display_name=?, status=?, resolve_query=?, confirmed_identity=?, current_version_id=?, current_timeline_id=?, updated_at=? WHERE id=?`,
-		c.DisplayName, c.Status, c.ResolveQuery, c.ConfirmedIdentity, c.CurrentVersionID, c.CurrentTimelineID, c.UpdatedAt, c.ID,
+		`UPDATE characters SET display_name=?, status=?, resolve_query=?, confirmed_identity=?, current_version_id=?, current_timeline_id=?, play_style=?, game_config_json=?, updated_at=? WHERE id=?`,
+		c.DisplayName, c.Status, c.ResolveQuery, c.ConfirmedIdentity, c.CurrentVersionID, c.CurrentTimelineID, playStyle, encodeGameConfig(c.GameConfig), c.UpdatedAt, c.ID,
 	)
 	return err
 }

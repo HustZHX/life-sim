@@ -252,7 +252,7 @@ curl -s -b /tmp/lf_cookies.txt http://127.0.0.1/api/v1/auth/me
 1. 当前为 **HTTP 纯 IP**，密码明文传输，仅供小范围自用
 2. 备案有域名后，参考 DEPLOY.md 启用 HTTPS，设置 `AUTH_COOKIE_SECURE=true`
 3. 数据持久化在 Docker 卷 `lifesim-data`，`docker compose down` 不会删数据
-4. 更新：`git pull && docker compose up --build -d`
+4. 更新：`git pull && docker compose up --build -d`（详见 [docs/OPS-SERVER.md](./docs/OPS-SERVER.md) 全量流程；紧急可先 scp 热更）
 
 ---
 

@@ -68,10 +68,17 @@ type chatResponse struct {
 }
 
 func (c *Client) LoadPrompt(name string) (string, error) {
-	path := filepath.Join(c.promptDir, name)
+	base := strings.TrimSpace(name)
+	if base == "" {
+		return "", fmt.Errorf("读取 prompt: 文件名为空")
+	}
+	if !strings.HasSuffix(strings.ToLower(base), ".txt") {
+		base += ".txt"
+	}
+	path := filepath.Join(c.promptDir, base)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("读取 prompt %s: %w", name, err)
+		return "", fmt.Errorf("读取 prompt %s: %w", base, err)
 	}
 	return string(data), nil
 }

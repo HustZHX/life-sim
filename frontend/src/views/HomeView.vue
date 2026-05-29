@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
-import { User, MagicStick } from '@element-plus/icons-vue'
+import { User, MagicStick, Trophy } from '@element-plus/icons-vue'
 
 const router = useRouter()
 
 function pick(mode: 'famous' | 'random') {
   router.push(mode === 'famous' ? '/famous' : '/random')
+}
+
+function pickGame() {
+  router.push('/game')
 }
 </script>
 
@@ -26,6 +30,11 @@ function pick(mode: 'famous' | 'random') {
         <el-icon :size="48" color="#67c23a"><MagicStick /></el-icon>
         <h2>随机普通人</h2>
         <p>AI 随机生成虚构人物，可选导入名人的性格与时代背景</p>
+      </el-card>
+      <el-card class="mode-card game-card" shadow="hover" @click="pickGame">
+        <el-icon :size="48" color="#e6a23c"><Trophy /></el-icon>
+        <h2>人生游戏</h2>
+        <p>逐步抉择推演人生，档案与世界线随你的选择动态变化</p>
       </el-card>
     </div>
   </div>

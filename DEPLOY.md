@@ -76,12 +76,17 @@ docker compose up --build -d
 
 ## 6. 常用运维
 
+日常 **热更**、**提交推送后的全量部署**、SSH、服务器目录与故障排查见 **[docs/OPS-SERVER.md](./docs/OPS-SERVER.md)**。
+
 ```bash
 # 查看日志
 docker compose logs -f backend
 
 # 重启
 docker compose restart
+
+# 代码更新（已 push 到 Git 后）
+cd /opt/life-sim && git pull && docker compose up --build -d
 
 # 新增 bootstrap 用户：修改 .env 中 AUTH_BOOTSTRAP_USERS 后重启
 # 若用户名已存在，需登录后在应用内改密，或手动改 SQLite

@@ -68,7 +68,7 @@ npm run dev
 docker compose up --build
 ```
 
-公网部署（双重鉴权、纯 IP 访问）见 [DEPLOY.md](./DEPLOY.md)。
+公网部署（双重鉴权、纯 IP 访问）见 [DEPLOY.md](./DEPLOY.md)。已上线后的 **热更 / 全量发布 / 服务器运维** 见 [docs/OPS-SERVER.md](./docs/OPS-SERVER.md)。
 
 ## 鉴权（可选）
 

@@ -4,20 +4,17 @@ import {
   api,
   pollJob,
   type AIModelId,
+  type ChronicleRequest,
   type Job,
-  type LightNovelPerson,
-  type LightNovelRequest,
   type NarrativeArtifact,
   type NarrativeCachedResponse,
 } from '@/api/client'
 import { DEFAULT_AI_MODEL, modelDisplayLabel } from '@/constants/models'
-import { lightNovelPersonLabel } from '@/constants/lightNovelPerson'
 
-export interface LightNovelJobEntry {
+export interface ChronicleJobEntry {
   id: string
   fromSequence: number
   toSequence: number
-  person?: LightNovelPerson
   model: AIModelId
   status: Job['status']
   progress: number
@@ -47,23 +44,22 @@ function parseJobResult(result?: string): { content?: string; saved_file_id?: st
   }
 }
 
-function parseRequestJSON(raw?: string): Partial<LightNovelRequest> {
+function parseRequestJSON(raw?: string): Partial<ChronicleRequest> {
   if (!raw) return {}
   try {
-    return JSON.parse(raw) as Partial<LightNovelRequest>
+    return JSON.parse(raw) as Partial<ChronicleRequest>
   } catch {
     return {}
   }
 }
 
-function jobToEntry(job: Job): LightNovelJobEntry {
+function jobToEntry(job: Job): ChronicleJobEntry {
   const req = parseRequestJSON(job.request_json)
   const result = parseJobResult(job.result)
   return {
     id: job.id,
     fromSequence: req.from_sequence ?? 0,
     toSequence: req.to_sequence ?? 0,
-    person: (req.person as LightNovelPerson) || 'first',
     model: (job.model || req.model || DEFAULT_AI_MODEL) as AIModelId,
     status: job.status,
     progress: job.progress,
@@ -75,8 +71,8 @@ function jobToEntry(job: Job): LightNovelJobEntry {
   }
 }
 
-export function useLightNovelJobs(characterId: string) {
-  const jobs = ref<LightNovelJobEntry[]>([])
+export function useChronicleJobs(characterId: string) {
+  const jobs = ref<ChronicleJobEntry[]>([])
   const listVisible = ref(false)
   const loading = ref(false)
   const pollingIds = new Set<string>()
@@ -86,7 +82,7 @@ export function useLightNovelJobs(characterId: string) {
     () => jobs.value.filter((j) => j.status === 'pending' || j.status === 'running').length
   )
 
-  function upsertEntry(entry: LightNovelJobEntry) {
+  function upsertEntry(entry: ChronicleJobEntry) {
     const idx = jobs.value.findIndex((j) => j.id === entry.id)
     if (idx >= 0) {
       jobs.value[idx] = { ...jobs.value[idx], ...entry }
@@ -102,7 +98,7 @@ export function useLightNovelJobs(characterId: string) {
   async function refreshList() {
     loading.value = true
     try {
-      const res = await api.listLightNovelJobs(characterId)
+      const res = await api.listChronicleJobs(characterId)
       jobs.value = res.jobs.map(jobToEntry)
       for (const job of res.jobs) {
         if (job.status === 'pending' || job.status === 'running') {
@@ -110,7 +106,7 @@ export function useLightNovelJobs(characterId: string) {
         }
       }
     } catch (e: unknown) {
-      ElMessage.error(e instanceof Error ? e.message : '加载生成队列失败')
+      ElMessage.error(e instanceof Error ? e.message : '加载史书队列失败')
     } finally {
       loading.value = false
     }
@@ -125,16 +121,15 @@ export function useLightNovelJobs(characterId: string) {
       const done = await pollJob(jobId, updateFromJob, 2000, 600)
       updateFromJob(done)
       if (notify && wasActive && done.status === 'completed') {
-        ElMessage.success('轻小说生成完成')
+        ElMessage.success('史书编纂完成')
       } else if (notify && wasActive && done.status === 'failed') {
-        ElMessage.error(done.error || '轻小说生成失败')
+        ElMessage.error(done.error || '史书编纂失败')
       }
     } catch (e: unknown) {
       upsertEntry({
         id: jobId,
         fromSequence: 0,
         toSequence: 0,
-        person: 'first',
         model: DEFAULT_AI_MODEL,
         status: 'failed',
         progress: 0,
@@ -173,19 +168,17 @@ export function useLightNovelJobs(characterId: string) {
     versionId: string
     fromSequence: number
     toSequence: number
-    person: LightNovelPerson
     model: AIModelId
     force?: boolean
     onCached?: (artifact: NarrativeArtifact) => void
   }): Promise<boolean> {
     listVisible.value = true
     try {
-      const res = await api.generateLightNovel(characterId, {
+      const res = await api.generateChronicle(characterId, {
         model: params.model,
         version_id: params.versionId,
         from_sequence: params.fromSequence,
         to_sequence: params.toSequence,
-        person: params.person,
         force: params.force,
       })
 
@@ -198,11 +191,10 @@ export function useLightNovelJobs(characterId: string) {
       const entry = jobToEntry(res)
       entry.fromSequence = params.fromSequence
       entry.toSequence = params.toSequence
-      entry.person = params.person
       upsertEntry(entry)
       ensurePoll(res.id)
       startBackgroundPoll()
-      ElMessage.success('已提交后台生成，可在生成队列查看进度')
+      ElMessage.success('已提交史书编纂，可在队列查看进度')
       return true
     } catch (e: unknown) {
       ElMessage.error(e instanceof Error ? e.message : '提交失败')
@@ -210,20 +202,20 @@ export function useLightNovelJobs(characterId: string) {
     }
   }
 
-  async function retryJob(entry: LightNovelJobEntry) {
+  async function retryJob(entry: ChronicleJobEntry) {
     listVisible.value = true
     try {
       const job = await api.retryJob(entry.id)
       upsertEntry(jobToEntry(job))
       ensurePoll(job.id)
       startBackgroundPoll()
-      ElMessage.success('已重新提交生成')
+      ElMessage.success('已重新提交编纂')
     } catch (e: unknown) {
       ElMessage.error(e instanceof Error ? e.message : '重试失败')
     }
   }
 
-  function statusLabel(entry: LightNovelJobEntry): string {
+  function statusLabel(entry: ChronicleJobEntry): string {
     if (entry.status === 'completed') return '已完成'
     if (entry.status === 'failed') return '失败'
     if (entry.status === 'running') {
@@ -233,8 +225,8 @@ export function useLightNovelJobs(characterId: string) {
     return '排队中…'
   }
 
-  function entryTitle(entry: LightNovelJobEntry): string {
-    return `节点 ${entry.fromSequence}–${entry.toSequence} · ${lightNovelPersonLabel(entry.person || 'first')}`
+  function entryTitle(entry: ChronicleJobEntry): string {
+    return `节点 ${entry.fromSequence}–${entry.toSequence}`
   }
 
   onUnmounted(() => {

@@ -1,0 +1,135 @@
+package store
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"life-sim/backend/model"
+)
+
+type gameEraOptionsPayload struct {
+	Options []model.GameEraOption `json:"options"`
+}
+
+func ParseGameEraOptions(raw string) ([]model.GameEraOption, error) {
+	var p gameEraOptionsPayload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return nil, err
+	}
+	if len(p.Options) == 0 {
+		return nil, fmt.Errorf("未返回时期选项")
+	}
+	if len(p.Options) > 4 {
+		p.Options = p.Options[:4]
+	}
+	return p.Options, nil
+}
+
+type gameChoicesPayload struct {
+	Options []struct {
+		ID           string `json:"id"`
+		Label        string `json:"label"`
+		Description  string `json:"description"`
+		IsHistorical bool   `json:"is_historical"`
+	} `json:"options"`
+}
+
+func ParseGameChoices(raw string) ([]model.GameChoiceOption, error) {
+	var p gameChoicesPayload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return nil, err
+	}
+	if len(p.Options) < 3 {
+		return nil, fmt.Errorf("抉择选项不足")
+	}
+	out := make([]model.GameChoiceOption, 0, len(p.Options))
+	for i, o := range p.Options {
+		id := o.ID
+		if id == "" {
+			id = fmt.Sprintf("choice_%d", i+1)
+		}
+		out = append(out, model.GameChoiceOption{
+			ID:           id,
+			Label:        o.Label,
+			Description:  o.Description,
+			IsHistorical: o.IsHistorical,
+		})
+	}
+	return out, nil
+}
+
+type gameApplyChoicePayload struct {
+	NextNode struct {
+		Year                int                 `json:"year"`
+		Age                 int                 `json:"age"`
+		Title               string              `json:"title"`
+		Events              string              `json:"events"`
+		Thoughts            string              `json:"thoughts"`
+		PersonalitySnapshot string              `json:"personality_snapshot"`
+		TraitChanges        []model.TraitChange `json:"trait_changes"`
+		Entities            *model.NodeEntities `json:"entities"`
+		Scene               *model.NodeScene    `json:"scene"`
+	} `json:"next_node"`
+	ProfileUpdates   map[string]string `json:"profile_updates"`
+	AffectsHistory   bool              `json:"affects_history"`
+	WorldLineChanged *bool             `json:"world_line_changed"`
+	MajorEvents      []string          `json:"major_events"`
+	WorldLineDelta   struct {
+		EraSummary            string               `json:"era_summary"`
+		HistoricalTrend       string               `json:"historical_trend_patch"`
+		HistoricalTrendPatch  string               `json:"historical_trend"` // alias
+		DailyLifeContext      string               `json:"daily_life_context"`
+		Events                []model.WorldLineEvent `json:"events"`
+	} `json:"world_line_delta"`
+}
+
+func ParseGameApplyChoice(raw string) (*gameApplyChoicePayload, error) {
+	var p gameApplyChoicePayload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return nil, err
+	}
+	if p.NextNode.Title == "" || p.NextNode.Events == "" {
+		return nil, fmt.Errorf("缺少下一节点内容")
+	}
+	if p.WorldLineDelta.HistoricalTrend == "" {
+		p.WorldLineDelta.HistoricalTrend = p.WorldLineDelta.HistoricalTrendPatch
+	}
+	return &p, nil
+}
+
+func hasAppendableWorldLineEvents(delta *gameApplyChoicePayload, lastWLYear int) bool {
+	if delta == nil {
+		return false
+	}
+	for _, ev := range delta.WorldLineDelta.Events {
+		if ev.Year > lastWLYear {
+			return true
+		}
+	}
+	return false
+}
+
+func hasWorldLineTextPatches(delta *gameApplyChoicePayload) bool {
+	if delta == nil {
+		return false
+	}
+	d := delta.WorldLineDelta
+	return strings.TrimSpace(d.EraSummary) != "" ||
+		strings.TrimSpace(d.HistoricalTrend) != "" ||
+		strings.TrimSpace(d.DailyLifeContext) != ""
+}
+
+// ShouldSkipWorldLineDelta 无宏观变化且无新大事时跳过世界线写入。
+func ShouldSkipWorldLineDelta(p *gameApplyChoicePayload, lastWLYear int) bool {
+	if p == nil {
+		return true
+	}
+	if hasAppendableWorldLineEvents(p, lastWLYear) || hasWorldLineTextPatches(p) {
+		return false
+	}
+	if p.WorldLineChanged != nil {
+		return !*p.WorldLineChanged && len(p.MajorEvents) == 0
+	}
+	return !p.AffectsHistory
+}

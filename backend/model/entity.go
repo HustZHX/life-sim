@@ -6,6 +6,9 @@ const (
 	ModeFamous = "famous"
 	ModeRandom = "random"
 
+	PlayStyleSimulation = "simulation"
+	PlayStyleGame       = "game"
+
 	StatusDraft         = "draft"
 	StatusResolved      = "resolved"
 	StatusConfirmed     = "confirmed"
@@ -21,6 +24,8 @@ const (
 type Character struct {
 	ID                 string    `json:"id"`
 	Mode               string    `json:"mode"`
+	PlayStyle          string    `json:"play_style,omitempty"`
+	GameConfig         *GameConfig `json:"game_config,omitempty"`
 	DisplayName        string    `json:"display_name"`
 	Status             string    `json:"status"`
 	ResolveQuery       string    `json:"resolve_query,omitempty"`
@@ -29,6 +34,104 @@ type Character struct {
 	CurrentTimelineID  string    `json:"current_timeline_id,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+// GameConfig 人生游戏模式配置（存于 characters.game_config_json）。
+type GameConfig struct {
+	EraDescription  string          `json:"era_description,omitempty"`
+	EraOptions      []GameEraOption `json:"era_options,omitempty"`
+	SelectedEra     string          `json:"selected_era,omitempty"`
+	StartYearHint   int             `json:"start_year_hint,omitempty"`
+	BirthBackground string          `json:"birth_background,omitempty"`
+}
+
+// GameEraOption AI 生成的历史时期选项。
+type GameEraOption struct {
+	Label       string `json:"label"`
+	YearRange   string `json:"year_range"`
+	StartYear   int    `json:"start_year"`
+	Description string `json:"description"`
+}
+
+// GameEraOptionsRequest 生成时期选项。
+type GameEraOptionsRequest struct {
+	Model          string `json:"model"`
+	EraDescription string `json:"era_description,omitempty"`
+	Regenerate     bool   `json:"regenerate,omitempty"`
+}
+
+// GameEraOptionsResponse 时期选项列表。
+type GameEraOptionsResponse struct {
+	Options []GameEraOption `json:"options"`
+}
+
+// GameProfileGenerateRequest 游戏模式档案生成。
+type GameProfileGenerateRequest struct {
+	Model           string `json:"model"`
+	DisplayName     string `json:"display_name,omitempty"`
+	BirthBackground string `json:"birth_background,omitempty"`
+	// 名人：需先写入 GameConfig（含 selected_era / start_year_hint）
+}
+
+// GameTimelineStartRequest 开始游戏时间轴（首节点）。
+type GameTimelineStartRequest struct {
+	Model string `json:"model"`
+	Title string `json:"title,omitempty"`
+}
+
+// GameTimelineStartJobRequest Job 请求体。
+type GameTimelineStartJobRequest struct {
+	TimelineID string `json:"timeline_id"`
+}
+
+// GameChoiceOption 节点抉择选项。
+type GameChoiceOption struct {
+	ID           string `json:"id"`
+	Label        string `json:"label"`
+	Description  string `json:"description"`
+	IsHistorical bool   `json:"is_historical,omitempty"`
+}
+
+// GameChoicesResponse 抉择选项响应。
+type GameChoicesResponse struct {
+	Options      []GameChoiceOption `json:"options"`
+	ChosenID     string             `json:"chosen_id,omitempty"`
+	CustomText   string             `json:"custom_text,omitempty"`
+	AlreadyChosen bool              `json:"already_chosen,omitempty"`
+}
+
+// GameChooseRequest 应用抉择。
+type GameChooseRequest struct {
+	Model      string `json:"model"`
+	ChoiceID   string `json:"choice_id,omitempty"`
+	CustomText string `json:"custom_text,omitempty"`
+}
+
+// GameChooseJobRequest Job 请求体。
+type GameChooseJobRequest struct {
+	TimelineID string `json:"timeline_id"`
+	NodeID     string `json:"node_id"`
+	ChoiceID   string `json:"choice_id,omitempty"`
+	CustomText string `json:"custom_text,omitempty"`
+}
+
+// GameNodeChoiceRecord 节点已缓存的抉择（含选项与已选）。
+type GameNodeChoiceRecord struct {
+	Options    []GameChoiceOption `json:"options"`
+	ChosenID   string             `json:"chosen_id,omitempty"`
+	CustomText string             `json:"custom_text,omitempty"`
+}
+
+// GameNodeChoiceDisplay 时间轴上展示的已选抉择（位于两节点之间）。
+type GameNodeChoiceDisplay struct {
+	NodeID       string `json:"node_id"`
+	NodeSequence int    `json:"node_sequence"`
+	DisplayText  string `json:"display_text"`
+}
+
+// GameUpdateConfigRequest 更新游戏配置（选时期等）。
+type GameUpdateConfigRequest struct {
+	GameConfig GameConfig `json:"game_config" binding:"required"`
 }
 
 type ResolveCandidate struct {
@@ -266,6 +369,7 @@ const (
 	NarrativeRich     = "rich"
 
 	NarrativeKindLightNovel = "light_novel"
+	NarrativeKindChronicle  = "chronicle"
 	NarrativeKindDiary      = "diary"
 	NarrativeKindLetter     = "letter"
 	NarrativeKindArchive    = "archive"
@@ -466,6 +570,7 @@ type VersionDiff struct {
 type CharacterHistoryItem struct {
 	ID               string    `json:"id"`
 	Mode             string    `json:"mode"`
+	PlayStyle        string    `json:"play_style,omitempty"`
 	DisplayName      string    `json:"display_name"`
 	Status           string    `json:"status"`
 	ResolveQuery     string    `json:"resolve_query,omitempty"`
@@ -541,6 +646,42 @@ type LightNovelRequest struct {
 	FromSequence int    `json:"from_sequence"`
 	ToSequence   int    `json:"to_sequence"`
 	Person       string `json:"person,omitempty"`
+	Force        bool   `json:"force,omitempty"`
+}
+
+// SavedChronicle 磁盘上保存的史书（data/chronicles/<branch>/）。
+type SavedChronicle struct {
+	ID           string    `json:"id"`
+	CharacterID  string    `json:"character_id"`
+	DisplayName  string    `json:"display_name,omitempty"`
+	VersionID    string    `json:"version_id"`
+	FromSequence int       `json:"from_sequence"`
+	ToSequence   int       `json:"to_sequence"`
+	Model        string    `json:"model,omitempty"`
+	Branch       string    `json:"branch,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	Content      string    `json:"content"`
+}
+
+// SavedChronicleMeta 史书列表项（不含正文）。
+type SavedChronicleMeta struct {
+	ID           string    `json:"id"`
+	CharacterID  string    `json:"character_id"`
+	DisplayName  string    `json:"display_name,omitempty"`
+	VersionID    string    `json:"version_id"`
+	FromSequence int       `json:"from_sequence"`
+	ToSequence   int       `json:"to_sequence"`
+	Model        string    `json:"model,omitempty"`
+	Branch       string    `json:"branch,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// ChronicleRequest 编纂史书
+type ChronicleRequest struct {
+	Model        string `json:"model"`
+	VersionID    string `json:"version_id"`
+	FromSequence int    `json:"from_sequence"`
+	ToSequence   int    `json:"to_sequence"`
 	Force        bool   `json:"force,omitempty"`
 }
 

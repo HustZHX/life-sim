@@ -1,20 +1,47 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { LightNovelJobEntry } from '@/composables/useLightNovelJobs'
+import type { AIModelId, Job } from '@/api/client'
+import type { LightNovelPerson } from '@/constants/lightNovelPerson'
+
+export interface NarrativeRangeJobEntry {
+  id: string
+  fromSequence: number
+  toSequence: number
+  person?: LightNovelPerson
+  model: AIModelId
+  status: Job['status']
+  progress: number
+  stageText: string
+  error?: string
+  content?: string
+  createdAt?: string
+}
 import { lightNovelPersonLabel } from '@/constants/lightNovelPerson'
 import { modelDisplayLabel } from '@/constants/models'
 
-const props = defineProps<{
-  modelValue: boolean
-  jobs: LightNovelJobEntry[]
-  loading?: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    modelValue: boolean
+    jobs: NarrativeRangeJobEntry[]
+    loading?: boolean
+    drawerTitle?: string
+    hint?: string
+    emptyDescription?: string
+    showPerson?: boolean
+  }>(),
+  {
+    drawerTitle: '轻小说生成队列',
+    hint: '生成任务在后台运行，可关闭此面板继续编辑时间轴。超过 5 个节点会自动分章撰写。',
+    emptyDescription: '暂无生成任务，点击「生成轻小说」提交',
+    showPerson: true,
+  }
+)
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
   refresh: []
-  view: [entry: LightNovelJobEntry]
-  retry: [entry: LightNovelJobEntry]
+  view: [entry: NarrativeRangeJobEntry]
+  retry: [entry: NarrativeRangeJobEntry]
 }>()
 
 const activeCount = computed(
@@ -38,14 +65,14 @@ function statusTagType(status: string): 'success' | 'danger' | 'warning' | 'info
   return 'info'
 }
 
-function statusText(entry: LightNovelJobEntry): string {
+function statusText(entry: NarrativeRangeJobEntry): string {
   if (entry.status === 'completed') return '已完成'
   if (entry.status === 'failed') return '失败'
   if (entry.status === 'running') return '生成中'
   return '排队中'
 }
 
-function canView(entry: LightNovelJobEntry): boolean {
+function canView(entry: NarrativeRangeJobEntry): boolean {
   return entry.status === 'completed' && !!entry.content
 }
 </script>
@@ -53,15 +80,13 @@ function canView(entry: LightNovelJobEntry): boolean {
 <template>
   <el-drawer
     :model-value="modelValue"
-    title="轻小说生成队列"
+    :title="drawerTitle"
     size="min(520px, 92vw)"
     destroy-on-close
     @update:model-value="onClose"
   >
     <div class="drawer-head">
-      <p class="hint">
-        生成任务在后台运行，可关闭此面板继续编辑时间轴。超过 5 个节点会自动分章撰写。
-      </p>
+      <p class="hint">{{ hint }}</p>
       <div class="head-actions">
         <el-tag v-if="activeCount" type="warning" effect="plain">{{ activeCount }} 个进行中</el-tag>
         <el-button size="small" :loading="loading" @click="emit('refresh')">刷新</el-button>
@@ -69,13 +94,15 @@ function canView(entry: LightNovelJobEntry): boolean {
     </div>
 
     <div v-loading="loading" class="job-list">
-      <el-empty v-if="!jobs.length && !loading" description="暂无生成任务，点击「生成轻小说」提交" />
+      <el-empty v-if="!jobs.length && !loading" :description="emptyDescription" />
 
       <div v-for="entry in jobs" :key="entry.id" class="job-card">
         <div class="job-card-head">
           <div class="job-meta">
             <span class="job-range">节点 {{ entry.fromSequence }}–{{ entry.toSequence }}</span>
-            <el-tag size="small" effect="plain">{{ lightNovelPersonLabel(entry.person) }}</el-tag>
+            <el-tag v-if="showPerson" size="small" effect="plain">{{
+              lightNovelPersonLabel(entry.person || 'first')
+            }}</el-tag>
             <el-tag size="small" type="info" effect="plain">{{ modelDisplayLabel(entry.model) }}</el-tag>
           </div>
           <el-tag size="small" :type="statusTagType(entry.status)">{{ statusText(entry) }}</el-tag>

@@ -29,6 +29,23 @@ func ResolveDatabasePath(rel string) string {
 	return filepath.Join(wd, rel)
 }
 
+// ResolveChroniclesDir 返回 data/chronicles/<branch>/ 目录（按当前 git 分支）。
+func ResolveChroniclesDir() string {
+	branch := CurrentGitBranch()
+	root := findProjectRoot()
+	if root == "" {
+		if wd, err := os.Getwd(); err == nil {
+			root = wd
+		}
+	}
+	if root == "" {
+		root = "."
+	}
+	p := filepath.Join(root, "data", "chronicles", branch)
+	_ = os.MkdirAll(p, 0755)
+	return p
+}
+
 // ResolveLightNovelsDir 返回 data/light-novels/<branch>/ 目录（按当前 git 分支）。
 func ResolveLightNovelsDir() string {
 	branch := CurrentGitBranch()

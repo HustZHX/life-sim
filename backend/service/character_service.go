@@ -21,6 +21,7 @@ type CharacterService struct {
 	stepYears  int
 	pending    map[string][]model.ResolveCandidate
 	aiCache    *aiContextCache
+	game       *GameService
 }
 
 func NewCharacterService(st *store.Store, aiClient *ai.Client, cfg *config.Config) *CharacterService {
@@ -31,6 +32,11 @@ func NewCharacterService(st *store.Store, aiClient *ai.Client, cfg *config.Confi
 		pending:   make(map[string][]model.ResolveCandidate),
 		aiCache:   newAIContextCache(),
 	}
+}
+
+// BindGameService 注入游戏服务（避免构造循环依赖）。
+func (s *CharacterService) BindGameService(g *GameService) {
+	s.game = g
 }
 
 func (s *CharacterService) resolveAPIModel(modelID string) (string, error) {
@@ -642,6 +648,13 @@ func (s *CharacterService) resolveTimelineScope(ch *model.Character, timelineID 
 	return list[0].ID, nil
 }
 
+func (s *CharacterService) ListGameChoiceDisplays(versionID string) ([]model.GameNodeChoiceDisplay, error) {
+	if s.game == nil {
+		return nil, nil
+	}
+	return s.game.ListChoiceDisplays(versionID)
+}
+
 func (s *CharacterService) GetTimeline(characterID, timelineID, versionID string) (*model.Timeline, []model.LifeNode, *model.TimelineVersion, error) {
 	ch, err := s.store.GetCharacter(characterID)
 	if err != nil {
@@ -1239,6 +1252,9 @@ func (s *CharacterService) RollbackToNode(characterID, nodeID string, req model.
 	}
 	if err := s.store.UpdateTimelineCurrentVersion(timeline.ID, newVersionID); err != nil {
 		return nil, err
+	}
+	if ch.PlayStyle == model.PlayStyleGame && s.game != nil {
+		_ = s.game.ApplyGameRollback(characterID, timeline.ID, node.Sequence, node.Year)
 	}
 	return ch, nil
 }

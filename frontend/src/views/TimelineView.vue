@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { api, type SavedLightNovelMeta } from '@/api/client'
+import { api, type SavedChronicleMeta, type SavedLightNovelMeta } from '@/api/client'
 import type { AIModelId, BranchNode, LifeNode, Timeline, WorldLine } from '@/api/client'
 import { useLayoutStore } from '@/stores/layout'
 import { DEFAULT_AI_MODEL, DEFAULT_CASCADE_MODEL, modelDisplayLabel } from '@/constants/models'
@@ -13,13 +13,14 @@ import BranchFlowchart from '@/components/BranchFlowchart.vue'
 import ProfilePanel from '@/components/ProfilePanel.vue'
 import NarrativeDialog from '@/components/NarrativeDialog.vue'
 import CharacterDialogueDialog from '@/components/CharacterDialogueDialog.vue'
-import LightNovelJobList from '@/components/LightNovelJobList.vue'
+import LightNovelJobList, { type NarrativeRangeJobEntry } from '@/components/LightNovelJobList.vue'
 import ModelSelector from '@/components/ModelSelector.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import type { Profile } from '@/api/client'
 import { copyTextToClipboard, formatTimelineExport } from '@/utils/exportTimelineText'
 import { useNarrativeGenerate } from '@/composables/useNarrativeGenerate'
-import { useLightNovelJobs, type LightNovelJobEntry } from '@/composables/useLightNovelJobs'
+import { useChronicleJobs, type ChronicleJobEntry } from '@/composables/useChronicleJobs'
+import { useLightNovelJobs } from '@/composables/useLightNovelJobs'
 import { useJobRunner } from '@/composables/useJobRunner'
 import { DEFAULT_TARGET_NODE_COUNT, isLivingProfile } from '@/utils/timelineDensity'
 import {
@@ -175,6 +176,33 @@ const savedNovelsLoading = ref(false)
 const savedNovels = ref<SavedLightNovelMeta[]>([])
 const savedNovelsBranch = ref('')
 
+const chronicleJobs = useChronicleJobs(charId)
+const {
+  jobs: chronicleJobList,
+  listVisible: chronicleListVisible,
+  loading: chronicleListLoading,
+  activeCount: chronicleActiveCount,
+  refreshList: refreshChronicleJobs,
+  submit: submitChronicleJob,
+  retryJob: retryChronicleJob,
+} = chronicleJobs
+
+const chroniclePickerVisible = ref(false)
+const chronicleSubmitting = ref(false)
+const chronicleModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+const chronicleFrom = ref(0)
+const chronicleTo = ref(0)
+const chronicleViewContext = ref<{
+  versionId: string
+  fromSequence: number
+  toSequence: number
+  model: AIModelId
+} | null>(null)
+const savedChroniclesVisible = ref(false)
+const savedChroniclesLoading = ref(false)
+const savedChronicles = ref<SavedChronicleMeta[]>([])
+const savedChroniclesBranch = ref('')
+
 const narrativeChangeVisible = ref(false)
 const narrativeChangeInstruction = ref('')
 const narrativeChangeModel = ref<AIModelId>(DEFAULT_AI_MODEL)
@@ -301,14 +329,19 @@ function openLightNovelJobList() {
   void refreshLightNovelJobs()
 }
 
-function viewLightNovelJob(entry: LightNovelJobEntry) {
+function viewLightNovelJob(entry: NarrativeRangeJobEntry) {
   if (!entry.content) return
-  openLightNovelContent(entry.content, entry.fromSequence, entry.toSequence, entry.person)
+  openLightNovelContent(
+    entry.content,
+    entry.fromSequence,
+    entry.toSequence,
+    entry.person || 'first'
+  )
   lightNovelViewContext.value = {
     versionId: currentVersionId.value,
     fromSequence: entry.fromSequence,
     toSequence: entry.toSequence,
-    person: entry.person,
+    person: entry.person || 'first',
     model: entry.model,
   }
 }
@@ -377,16 +410,133 @@ function formatSavedNovelTime(iso?: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString()
 }
 
+function openChroniclePicker() {
+  if (!nodes.value.length || !currentVersionId.value) {
+    ElMessage.warning('暂无节点可编纂史书')
+    return
+  }
+  const seqs = nodes.value.map((n) => n.sequence)
+  chronicleFrom.value = Math.min(...seqs)
+  chronicleTo.value = Math.max(...seqs)
+  chroniclePickerVisible.value = true
+}
+
+async function confirmChronicle() {
+  if (chronicleFrom.value > chronicleTo.value) {
+    ElMessage.warning('起始节点不能晚于结束节点')
+    return
+  }
+  if (!currentVersionId.value) return
+
+  chronicleSubmitting.value = true
+  try {
+    const ok = await submitChronicleJob({
+      versionId: currentVersionId.value,
+      fromSequence: chronicleFrom.value,
+      toSequence: chronicleTo.value,
+      model: chronicleModel.value,
+      onCached: (artifact) => {
+        chroniclePickerVisible.value = false
+        openChronicleContent(artifact.content, chronicleFrom.value, chronicleTo.value)
+        chronicleViewContext.value = {
+          versionId: currentVersionId.value,
+          fromSequence: chronicleFrom.value,
+          toSequence: chronicleTo.value,
+          model: chronicleModel.value,
+        }
+      },
+    })
+    if (ok) chroniclePickerVisible.value = false
+  } finally {
+    chronicleSubmitting.value = false
+  }
+}
+
+function openChronicleContent(text: string, fromSequence: number, toSequence: number) {
+  narrativeTitle.value = `史书 · 节点 ${fromSequence}–${toSequence}`
+  narrativeContent.value = text
+  narrativeVisible.value = true
+}
+
+function openChronicleJobList() {
+  chronicleListVisible.value = true
+  void refreshChronicleJobs()
+}
+
+function viewChronicleJob(entry: ChronicleJobEntry) {
+  if (!entry.content) return
+  openChronicleContent(entry.content, entry.fromSequence, entry.toSequence)
+  chronicleViewContext.value = {
+    versionId: currentVersionId.value,
+    fromSequence: entry.fromSequence,
+    toSequence: entry.toSequence,
+    model: entry.model,
+  }
+}
+
+async function regenerateChronicle() {
+  const ctx = chronicleViewContext.value
+  if (!ctx) return
+  narrativeVisible.value = false
+  await submitChronicleJob({
+    versionId: ctx.versionId,
+    fromSequence: ctx.fromSequence,
+    toSequence: ctx.toSequence,
+    model: ctx.model,
+    force: true,
+    onCached: (artifact) => {
+      openChronicleContent(artifact.content, ctx.fromSequence, ctx.toSequence)
+    },
+  })
+}
+
+async function openSavedChronicles() {
+  savedChroniclesVisible.value = true
+  savedChroniclesLoading.value = true
+  try {
+    const res = await api.listSavedChronicles({ character_id: charId })
+    savedChronicles.value = res.items
+    savedChroniclesBranch.value = res.branch || ''
+  } catch (e: unknown) {
+    savedChronicles.value = []
+    ElMessage.error(e instanceof Error ? e.message : '加载已保存史书失败')
+  } finally {
+    savedChroniclesLoading.value = false
+  }
+}
+
+async function viewSavedChronicle(item: SavedChronicleMeta) {
+  savedChroniclesLoading.value = true
+  try {
+    const full = await api.getSavedChronicle(item.id)
+    savedChroniclesVisible.value = false
+    openChronicleContent(full.content, full.from_sequence, full.to_sequence)
+    chronicleViewContext.value = {
+      versionId: full.version_id,
+      fromSequence: full.from_sequence,
+      toSequence: full.to_sequence,
+      model: (full.model as AIModelId) || DEFAULT_AI_MODEL,
+    }
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '读取史书失败')
+  } finally {
+    savedChroniclesLoading.value = false
+  }
+}
+
 function onNarrativeDialogClose(visible: boolean) {
   if (!visible) {
     closeNarrative()
     lightNovelViewContext.value = null
+    chronicleViewContext.value = null
   }
 }
 
 async function onNarrativeRegenerate() {
   if (lightNovelViewContext.value) {
     await regenerateLightNovel()
+  } else if (chronicleViewContext.value) {
+    await regenerateChronicle()
   } else {
     await regenerateNodeNarrative()
   }
@@ -758,6 +908,8 @@ onMounted(async () => {
   await load()
   await refreshLightNovelJobs()
   lightNovelJobs.startBackgroundPoll()
+  await refreshChronicleJobs()
+  chronicleJobs.startBackgroundPoll()
 })
 </script>
 
@@ -829,10 +981,17 @@ onMounted(async () => {
           <el-button :disabled="!nodes.length || pageLoading" @click="openLightNovelPicker">
             生成轻小说
           </el-button>
+          <el-button :disabled="!nodes.length || pageLoading" @click="openChroniclePicker">
+            编纂史书
+          </el-button>
           <el-badge :value="lightNovelActiveCount" :hidden="!lightNovelActiveCount" type="warning">
-            <el-button :disabled="pageLoading" @click="openLightNovelJobList">生成队列</el-button>
+            <el-button :disabled="pageLoading" @click="openLightNovelJobList">轻小说队列</el-button>
+          </el-badge>
+          <el-badge :value="chronicleActiveCount" :hidden="!chronicleActiveCount" type="warning">
+            <el-button :disabled="pageLoading" @click="openChronicleJobList">史书队列</el-button>
           </el-badge>
           <el-button :disabled="pageLoading" @click="openSavedNovels">已保存轻小说</el-button>
+          <el-button :disabled="pageLoading" @click="openSavedChronicles">已保存史书</el-button>
           <el-button @click="router.push('/characters')">人物列表</el-button>
           <el-button @click="showProfile = !showProfile">
             {{ showProfile ? '隐藏' : '查看' }}档案
@@ -1201,6 +1360,90 @@ onMounted(async () => {
       @retry="retryLightNovelJob"
     />
 
+    <LightNovelJobList
+      v-model="chronicleListVisible"
+      :jobs="chronicleJobList"
+      :loading="chronicleListLoading"
+      drawer-title="史书编纂队列"
+      hint="编纂任务在后台运行，可关闭此面板继续编辑。超过 5 个节点会自动分篇。"
+      empty-description="暂无编纂任务，点击「编纂史书」提交"
+      :show-person="false"
+      @refresh="refreshChronicleJobs"
+      @view="viewChronicleJob"
+      @retry="retryChronicleJob"
+    />
+
+    <el-dialog
+      v-model="chroniclePickerVisible"
+      title="编纂史书"
+      width="min(520px, 92vw)"
+      destroy-on-close
+    >
+      <p class="export-hint">
+        综合世界线、人生节点与人物档案撰写史书篇章；任务在后台生成（超过 5 个节点自动分篇）。
+      </p>
+      <el-form label-position="top">
+        <el-form-item label="起始节点">
+          <el-select v-model="chronicleFrom" style="width: 100%">
+            <el-option
+              v-for="opt in nodeSequenceOptions"
+              :key="'ch-from-' + opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="结束节点">
+          <el-select v-model="chronicleTo" style="width: 100%">
+            <el-option
+              v-for="opt in nodeSequenceOptions"
+              :key="'ch-to-' + opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+        </el-form-item>
+        <ModelSelector v-model="chronicleModel" />
+      </el-form>
+      <template #footer>
+        <el-button @click="chroniclePickerVisible = false">取消</el-button>
+        <el-button type="primary" :loading="chronicleSubmitting" @click="confirmChronicle">
+          提交后台编纂
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="savedChroniclesVisible"
+      :title="savedChroniclesBranch ? `已保存史书（分支 ${savedChroniclesBranch}）` : '已保存史书（当前 Git 分支）'"
+      width="min(640px, 92vw)"
+      destroy-on-close
+    >
+      <p class="export-hint">
+        每次编纂会新增一条记录。文件保存在项目 data/chronicles/&lt;分支名&gt;/ 下。
+      </p>
+      <div v-loading="savedChroniclesLoading">
+        <el-empty v-if="!savedChronicles.length && !savedChroniclesLoading" description="当前分支下暂无已保存史书" />
+        <el-table v-else :data="savedChronicles" size="small" stripe @row-click="viewSavedChronicle">
+          <el-table-column label="节点区间" width="110">
+            <template #default="{ row }">{{ row.from_sequence }}–{{ row.to_sequence }}</template>
+          </el-table-column>
+          <el-table-column prop="display_name" label="人物" min-width="100" show-overflow-tooltip />
+          <el-table-column label="保存时间" min-width="150">
+            <template #default="{ row }">{{ formatSavedNovelTime(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="72" align="center">
+            <template #default="{ row }">
+              <el-button link type="primary" @click.stop="viewSavedChronicle(row)">查看</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button @click="savedChroniclesVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <CharacterDialogueDialog
       ref="dialogueRef"
       :all-nodes="nodes"
@@ -1211,7 +1454,7 @@ onMounted(async () => {
       :model-value="narrativeVisible"
       :title="narrativeTitle"
       :content="narrativeContent"
-      :loading="(narrativeRunning || narrativeJobVisible) && !lightNovelViewContext"
+      :loading="(narrativeRunning || narrativeJobVisible) && !lightNovelViewContext && !chronicleViewContext"
       :progress="narrativeProgress"
       :status-text="narrativeStatusText"
       :failed="narrativeFailed"

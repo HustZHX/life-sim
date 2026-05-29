@@ -37,6 +37,15 @@ npm run dev
 - 旧时间轴节点可能缺少 `entities`（实体标注）或 `scene`（场景元数据），需重新生成或重算后才有
 - 后端重启会将进行中的异步任务标记为失败，需在前端重新提交生成
 
+## 生产发布
+
+本地开发验证通过后：
+
+1. 提交并 `git push` 到远程分支  
+2. 在服务器 `/opt/life-sim` 执行 `git pull && docker compose up --build -d`  
+
+未 push 前需在服务器验证时，可用 `scp` 同步单文件后重建（热更）。完整步骤见 [docs/OPS-SERVER.md](./docs/OPS-SERVER.md)。
+
 ## GitHub
 
 本地已初始化 Git 仓库。首次推送远程：

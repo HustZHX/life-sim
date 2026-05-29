@@ -38,7 +38,7 @@ const emit = defineEmits<{
       target_node_count?: number
     },
   ]
-  narrative: [kind: Exclude<NarrativeKind, 'light_novel'>, model: AIModelId]
+  narrative: [kind: Exclude<NarrativeKind, 'light_novel' | 'chronicle'>, model: AIModelId]
   dialogue: [model: AIModelId]
 }>()
 
@@ -120,7 +120,7 @@ function cancelEdit() {
   uiMode.value = 'read'
 }
 
-function openNarrative(kind: Exclude<NarrativeKind, 'light_novel'>) {
+function openNarrative(kind: Exclude<NarrativeKind, 'light_novel' | 'chronicle'>) {
   emit('narrative', kind, model.value)
 }
 

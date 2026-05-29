@@ -26,10 +26,47 @@ export interface ApiResponse<T> {
 export interface Character {
   id: string
   mode: 'famous' | 'random'
+  play_style?: 'simulation' | 'game'
+  game_config?: GameConfig
   display_name: string
   status: string
   current_version_id?: string
   current_timeline_id?: string
+}
+
+export interface GameConfig {
+  era_description?: string
+  era_options?: GameEraOption[]
+  selected_era?: string
+  start_year_hint?: number
+  birth_background?: string
+}
+
+export interface GameEraOption {
+  label: string
+  year_range: string
+  start_year: number
+  description: string
+}
+
+export interface GameChoiceOption {
+  id: string
+  label: string
+  description: string
+  is_historical?: boolean
+}
+
+export interface GameChoicesResponse {
+  options: GameChoiceOption[]
+  chosen_id?: string
+  custom_text?: string
+  already_chosen?: boolean
+}
+
+export interface GameNodeChoiceDisplay {
+  node_id: string
+  node_sequence: number
+  display_text: string
 }
 
 export interface TimelineActiveJob {
@@ -84,6 +121,7 @@ export interface WorldLineUpdatePayload {
 export interface HistoryItem {
   id: string
   mode: 'famous' | 'random'
+  play_style?: 'simulation' | 'game'
   display_name: string
   status: string
   resolve_query?: string
@@ -324,7 +362,7 @@ export interface VersionDiff {
   changes: NodeFieldChange[]
 }
 
-export type NarrativeKind = 'light_novel' | 'diary' | 'letter' | 'archive'
+export type NarrativeKind = 'light_novel' | 'chronicle' | 'diary' | 'letter' | 'archive'
 
 export interface NarrativeArtifact {
   id: string
@@ -364,6 +402,30 @@ export interface SavedLightNovelMeta {
 }
 
 export interface SavedLightNovel extends SavedLightNovelMeta {
+  content: string
+}
+
+export interface ChronicleRequest {
+  model?: AIModelId
+  version_id: string
+  from_sequence: number
+  to_sequence: number
+  force?: boolean
+}
+
+export interface SavedChronicleMeta {
+  id: string
+  character_id: string
+  display_name?: string
+  version_id: string
+  from_sequence: number
+  to_sequence: number
+  model?: string
+  branch?: string
+  created_at?: string
+}
+
+export interface SavedChronicle extends SavedChronicleMeta {
   content: string
 }
 
@@ -566,6 +628,43 @@ export const api = {
   createCharacter: (mode: string) =>
     unwrap<Character>(http.post('/api/v1/characters', { mode })),
 
+  createGameCharacter: (mode: 'famous' | 'random') =>
+    unwrap<Character>(http.post('/api/v1/game/characters', { mode })),
+
+  updateGameConfig: (id: string, game_config: GameConfig) =>
+    unwrap<Character>(http.patch(`/api/v1/characters/${id}/game/config`, { game_config })),
+
+  gameEraOptions: (
+    id: string,
+    body: { model?: AIModelId; era_description?: string; regenerate?: boolean }
+  ) =>
+    unwrap<{ options: GameEraOption[] }>(
+      http.post(`/api/v1/characters/${id}/game/era-options`, body)
+    ),
+
+  gameGenerateProfile: (
+    id: string,
+    body?: { model?: AIModelId; display_name?: string; birth_background?: string }
+  ) =>
+    unwrap<Profile>(http.post(`/api/v1/characters/${id}/game/profile/generate`, body ?? {})),
+
+  gameStartTimeline: (id: string, body?: { model?: AIModelId; title?: string }) =>
+    unwrap<Job>(http.post(`/api/v1/characters/${id}/game/timeline/start`, body ?? {})),
+
+  gameGetChoices: (charId: string, nodeId: string, model?: AIModelId, regenerate = false) =>
+    unwrap<GameChoicesResponse>(
+      http.get(`/api/v1/characters/${charId}/nodes/${nodeId}/game/choices`, {
+        params: { model, regenerate: regenerate ? '1' : undefined },
+      })
+    ),
+
+  gameChoose: (
+    charId: string,
+    nodeId: string,
+    body: { model?: AIModelId; choice_id?: string; custom_text?: string }
+  ) =>
+    unwrap<Job>(http.post(`/api/v1/characters/${charId}/nodes/${nodeId}/game/choose`, body)),
+
   getCharacter: (id: string) =>
     unwrap<Character>(http.get(`/api/v1/characters/${id}`)),
 
@@ -642,7 +741,7 @@ export const api = {
     ),
 
   getTimeline: (id: string, options?: { timelineId?: string; version?: string }) =>
-    unwrap<{ timeline: Timeline; version: TimelineVersion; nodes: LifeNode[] }>(
+    unwrap<{ timeline: Timeline; version: TimelineVersion; nodes: LifeNode[]; game_choices?: GameNodeChoiceDisplay[] }>(
       http.get(`/api/v1/characters/${id}/timeline`, {
         params: {
           timeline_id: options?.timelineId,
@@ -770,13 +869,33 @@ export const api = {
   getSavedLightNovel: (id: string) =>
     unwrap<SavedLightNovel>(http.get(`/api/v1/light-novels/${id}`)),
 
+  generateChronicle: (charId: string, body: ChronicleRequest) =>
+    unwrap<Job | NarrativeCachedResponse>(
+      http.post(`/api/v1/characters/${charId}/narratives/chronicle`, body)
+    ),
+
+  listChronicleJobs: (charId: string, limit = 30) =>
+    unwrap<{ jobs: Job[] }>(
+      http.get(`/api/v1/characters/${charId}/narratives/chronicle/jobs`, {
+        params: { limit },
+      })
+    ),
+
+  listSavedChronicles: (params?: { character_id?: string }) =>
+    unwrap<{ items: SavedChronicleMeta[]; branch?: string }>(
+      http.get('/api/v1/chronicles', { params })
+    ),
+
+  getSavedChronicle: (id: string) =>
+    unwrap<SavedChronicle>(http.get(`/api/v1/chronicles/${id}`)),
+
   applyNarrativeChange: (charId: string, body: NarrativeChangeRequest) =>
     unwrap<Job>(http.post(`/api/v1/characters/${charId}/timeline/narrative-change`, body)),
 
   generateNodeNarrative: (
     charId: string,
     nodeId: string,
-    kind: Exclude<NarrativeKind, 'light_novel'>,
+    kind: Exclude<NarrativeKind, 'light_novel' | 'chronicle'>,
     body?: NodeNarrativeRequest
   ) =>
     unwrap<Job | NarrativeCachedResponse>(

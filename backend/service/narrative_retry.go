@@ -21,11 +21,26 @@ func (s *NarrativeService) RetryJob(ctx context.Context, jobID string) (*model.J
 	switch old.Type {
 	case "narrative_light_novel":
 		return s.retryLightNovel(ctx, old)
+	case "narrative_chronicle":
+		return s.retryChronicle(ctx, old)
 	case "narrative_diary", "narrative_letter", "narrative_archive":
 		return s.retryNodeNarrative(ctx, old)
 	default:
 		return nil, fmt.Errorf("不支持重试该任务类型: %s", old.Type)
 	}
+}
+
+func (s *NarrativeService) retryChronicle(ctx context.Context, old *model.Job) (*model.Job, error) {
+	var req model.ChronicleRequest
+	if err := json.Unmarshal([]byte(old.RequestJSON), &req); err != nil {
+		return nil, fmt.Errorf("任务参数不完整，请重新提交")
+	}
+	if req.Model == "" {
+		req.Model = ai.NormalizeModelID(old.Model)
+	}
+	req.Force = true
+	job, _, err := s.StartChronicleJob(ctx, old.CharacterID, req)
+	return job, err
 }
 
 func (s *NarrativeService) retryLightNovel(ctx context.Context, old *model.Job) (*model.Job, error) {
