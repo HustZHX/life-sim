@@ -8,12 +8,35 @@ import (
 
 func TestShouldSkipWorldLineDelta_explicitNoChange(t *testing.T) {
 	f := false
-	p := &gameApplyChoicePayload{
+	p := &GameApplyChoicePayload{
 		WorldLineChanged: &f,
 		MajorEvents:      nil,
 	}
 	if !ShouldSkipWorldLineDelta(p, 200) {
 		t.Fatal("expected skip when world_line_changed=false and no delta")
+	}
+}
+
+func TestShouldSkipWorldLineDelta_backgroundEvents(t *testing.T) {
+	f := false
+	p := &GameApplyChoicePayload{WorldLineChanged: &f}
+	p.WorldLineDelta.Events = []model.WorldLineEvent{{Year: 1912, Name: "辛亥革命"}}
+	if ShouldSkipWorldLineDelta(p, 1910) {
+		t.Fatal("expected apply when background events present")
+	}
+}
+
+func TestSanitizeGameWorldLineDelta_clearsDivergence(t *testing.T) {
+	f := false
+	p := &GameApplyChoicePayload{WorldLineChanged: &f}
+	p.WorldLineDelta.Events = []model.WorldLineEvent{{
+		Year: 1912, Name: "背景", DivergenceNote: "不应出现",
+	}}
+	seq := 3
+	p.WorldLineDelta.Events[0].CausedByNodeSeq = &seq
+	SanitizeGameWorldLineDelta(p)
+	if p.WorldLineDelta.Events[0].DivergenceNote != "" || p.WorldLineDelta.Events[0].CausedByNodeSeq != nil {
+		t.Fatalf("sanitized=%+v", p.WorldLineDelta.Events[0])
 	}
 }
 
@@ -83,14 +106,14 @@ func TestParseGameApplyChoice_traitChangesString(t *testing.T) {
 
 func TestShouldSkipWorldLineDelta_newEvent(t *testing.T) {
 	f := false
-	p := &gameApplyChoicePayload{
+	p := &GameApplyChoicePayload{
 		WorldLineChanged: &f,
 		MajorEvents:      []string{"赤壁之战"},
 	}
 	if ShouldSkipWorldLineDelta(p, 200) {
 		t.Fatal("expected apply when major_events non-empty")
 	}
-	p2 := &gameApplyChoicePayload{WorldLineChanged: &f}
+	p2 := &GameApplyChoicePayload{WorldLineChanged: &f}
 	p2.WorldLineDelta.Events = []model.WorldLineEvent{{Year: 208, Name: "新事件"}}
 	if ShouldSkipWorldLineDelta(p2, 200) {
 		t.Fatal("expected apply when appendable events present")

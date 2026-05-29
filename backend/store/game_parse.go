@@ -71,7 +71,8 @@ type gameApplyNextNode struct {
 	Scene        json.RawMessage `json:"scene"`
 }
 
-type gameApplyChoicePayload struct {
+// GameApplyChoicePayload 为 game_apply_choice AI 响应解析结果。
+type GameApplyChoicePayload struct {
 	NextNode         gameApplyNextNodeParsed `json:"next_node"`
 	ProfileUpdates   json.RawMessage         `json:"profile_updates"`
 	AffectsHistory   bool                    `json:"affects_history"`
@@ -99,7 +100,7 @@ type gameApplyNextNodeParsed struct {
 	Scene               *model.NodeScene
 }
 
-func ParseGameApplyChoice(raw string) (*gameApplyChoicePayload, error) {
+func ParseGameApplyChoice(raw string) (*GameApplyChoicePayload, error) {
 	var j struct {
 		NextNode         gameApplyNextNode `json:"next_node"`
 		ProfileUpdates   json.RawMessage `json:"profile_updates"`
@@ -132,7 +133,7 @@ func ParseGameApplyChoice(raw string) (*gameApplyChoicePayload, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scene: %w", err)
 	}
-	p := &gameApplyChoicePayload{
+	p := &GameApplyChoicePayload{
 		NextNode: gameApplyNextNodeParsed{
 			Year:                j.NextNode.Year,
 			Age:                 j.NextNode.Age,
@@ -156,7 +157,7 @@ func ParseGameApplyChoice(raw string) (*gameApplyChoicePayload, error) {
 	return p, nil
 }
 
-func hasAppendableWorldLineEvents(delta *gameApplyChoicePayload, lastWLYear int) bool {
+func hasAppendableWorldLineEvents(delta *GameApplyChoicePayload, lastWLYear int) bool {
 	if delta == nil {
 		return false
 	}
@@ -168,7 +169,7 @@ func hasAppendableWorldLineEvents(delta *gameApplyChoicePayload, lastWLYear int)
 	return false
 }
 
-func hasWorldLineTextPatches(delta *gameApplyChoicePayload) bool {
+func hasWorldLineTextPatches(delta *GameApplyChoicePayload) bool {
 	if delta == nil {
 		return false
 	}
@@ -178,8 +179,26 @@ func hasWorldLineTextPatches(delta *gameApplyChoicePayload) bool {
 		strings.TrimSpace(d.DailyLifeContext) != ""
 }
 
-// ShouldSkipWorldLineDelta 无宏观变化且无新大事时跳过世界线写入。
-func ShouldSkipWorldLineDelta(p *gameApplyChoicePayload, lastWLYear int) bool {
+// SanitizeGameWorldLineDelta 抉择未改变世界走向时，清除事件上的分歧标注，避免误归因于本节点。
+func SanitizeGameWorldLineDelta(p *GameApplyChoicePayload) {
+	if p == nil {
+		return
+	}
+	changed := p.AffectsHistory
+	if p.WorldLineChanged != nil {
+		changed = *p.WorldLineChanged
+	}
+	if changed {
+		return
+	}
+	for i := range p.WorldLineDelta.Events {
+		p.WorldLineDelta.Events[i].DivergenceNote = ""
+		p.WorldLineDelta.Events[i].CausedByNodeSeq = nil
+	}
+}
+
+// ShouldSkipWorldLineDelta 无宏观变化、无背景大事增量、无 era 补丁时跳过世界线写入。
+func ShouldSkipWorldLineDelta(p *GameApplyChoicePayload, lastWLYear int) bool {
 	if p == nil {
 		return true
 	}

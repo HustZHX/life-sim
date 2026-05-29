@@ -78,8 +78,13 @@ func (s *CharacterService) recalcWorldLineFromNodes(
 	if previous != nil {
 		prevJSON = store.MarshalWorldLineForPrompt(previous)
 	}
+	startYear := store.MinNodeYear(nodes)
+	if startYear <= 0 {
+		startYear = endYear
+	}
 	user := fmt.Sprintf(
-		"end_year=%d（重算至最后一个人生节点年份）\n人物档案：\n%s\n当前人生节点：\n%s\n旧世界线：\n%s",
+		"start_year=%d（首个人生节点年份）\nend_year=%d（最后一个人生节点年份）\n请重算并覆盖该区间内全部天下大事与时代背景。\n人物档案：\n%s\n当前人生节点（已历全部）：\n%s\n旧世界线（可参考，勿机械保留空白时段）：\n%s",
+		startYear,
 		endYear,
 		store.ProfileJSONTimeline(profile),
 		store.MarshalNodesForWorldLine(nodes),
@@ -93,10 +98,10 @@ func (s *CharacterService) recalcWorldLineFromNodes(
 	if err != nil {
 		return nil, err
 	}
-	if previous != nil && previous.StartYear > 0 {
+	if startYear := store.MinNodeYear(nodes); startYear > 0 {
+		wl.StartYear = startYear
+	} else if previous != nil && previous.StartYear > 0 {
 		wl.StartYear = previous.StartYear
-	} else if len(nodes) > 0 {
-		wl.StartYear = nodes[0].Year
 	}
 	wl.EndYear = endYear
 	return wl, nil

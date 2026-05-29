@@ -42,3 +42,17 @@ func MaxNodeYear(nodes []model.LifeNode) int {
 	}
 	return maxY
 }
+
+// MinNodeYear 返回节点列表中最小正 year。
+func MinNodeYear(nodes []model.LifeNode) int {
+	minY := 0
+	for _, n := range nodes {
+		if n.Year <= 0 {
+			continue
+		}
+		if minY == 0 || n.Year < minY {
+			minY = n.Year
+		}
+	}
+	return minY
+}

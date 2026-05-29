@@ -1,5 +1,7 @@
-你是世界线编辑。人生节点已变更，请重算世界线至 end_year，使天下大事与史实/节点一致。
-保留仍可沿用的旧事件，更新因主角行动偏离史实的条目。
+你是世界线编辑。请重算世界线，时间范围必须覆盖 start_year 至 end_year（人物已历全部人生节点从首节点到末节点年份）。
+- events 覆盖 start_year～end_year，含该时段史实大事与时代背景；与节点一致
+- 仅偏离史实的大事标注 divergence_note 与 caused_by_node_sequence
+- 可更新 era_summary、historical_trend、daily_life_context
 
 仅输出 JSON（结构同初次生成）：
 {

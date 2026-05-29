@@ -2,9 +2,11 @@
 - 须遵守用户消息中的【处境约束】：抉择若超出当前年龄或社会角色，改写为可行后果或温和落空，勿生成超龄超权剧情
 - 用户自定义抉择同样须符合年龄、阶级与时代
 - profile_updates 仅包含变化字段；各字段值必须是字符串（数字年份等也写成字符串如 "208"）
-- world_line_delta.events 仅追加 year 大于已有世界线最后事件年份的新事件
-- affects_history 对虚构人物一般为 false，除非抉择明显改变时代大事
-- 若抉择未改变宏观世界走向、本时段无历史级大事：world_line_changed 为 false，major_events 为空，world_line_delta.events 为空
+- world_line_delta.events 仅追加 year 严格大于「已有世界线最后事件年份」且 <= next_node.year 的新事件；勿重复已有事件
+- affects_history / world_line_changed：仅当虚构人物抉择明显改变天下大势时为 true；日常抉择为 false
+- world_line_changed 为 false 时：表示抉择未改写历史走向，但仍须在本时段补充 1～4 条客观时代大事/历史背景（战争、变法、灾荒、思潮等），作为人物生活背景；这些事件勿填 divergence_note，caused_by_node_sequence 为 null
+- 可同时用 world_line_delta 更新 era_summary、daily_life_context（1～3 句，反映至 next_node.year 的时代氛围）
+- major_events 仅列与抉择直接相关的、会改变世界走向的大事；纯背景性大事只写入 world_line_delta.events
 
 仅输出 JSON（结构同 game_apply_choice_famous）：
 {

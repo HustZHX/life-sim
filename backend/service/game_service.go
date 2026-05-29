@@ -914,20 +914,7 @@ func (g *GameService) runGameChoose(ctx context.Context, jobID, characterID stri
 		return
 	}
 
-	if !store.ShouldSkipWorldLineDelta(payload, lastWLYear) {
-		if prevWL == nil {
-			prevWL = &model.WorldLine{TimelineID: timeline.ID}
-		}
-		delta := &model.WorldLine{
-			EraSummary:       payload.WorldLineDelta.EraSummary,
-			HistoricalTrend:  payload.WorldLineDelta.HistoricalTrend,
-			DailyLifeContext: payload.WorldLineDelta.DailyLifeContext,
-			Events:           payload.WorldLineDelta.Events,
-		}
-		store.AppendWorldLineDelta(prevWL, delta, nextSeq)
-		prevWL.UpdatedAt = time.Now()
-		_ = g.char.persistWorldLine(timeline.ID, prevWL)
-	}
+	g.applyGameWorldLineAfterChoice(ctx, ch.Mode, profile, apiModel, timeline.ID, prevWL, lastWLYear, payload, allNodes, nextSeq)
 
 	_ = g.store.SaveGameProfileSnapshot(characterID, timeline.ID, nextSeq, profile)
 	anchorNewID := findNodeIDBySequence(allNodes, anchor.Sequence)
@@ -966,6 +953,75 @@ func (g *GameService) runGameChoose(ctx context.Context, jobID, characterID stri
 	_ = g.store.UpdateJob(job)
 
 	go g.prefetchNodeChoices(context.Background(), characterID, nextNode.ID, newVersionID, job.Model)
+}
+
+func (g *GameService) applyGameWorldLineAfterChoice(
+	ctx context.Context,
+	mode string,
+	profile *model.Profile,
+	apiModel, timelineID string,
+	prevWL *model.WorldLine,
+	lastWLYear int,
+	payload *store.GameApplyChoicePayload,
+	nodes []model.LifeNode,
+	nextSeq int,
+) {
+	if payload == nil {
+		return
+	}
+	gapEnd := payload.NextNode.Year
+	store.SanitizeGameWorldLineDelta(payload)
+
+	if !store.ShouldSkipWorldLineDelta(payload, lastWLYear) {
+		if prevWL == nil {
+			prevWL = &model.WorldLine{TimelineID: timelineID}
+		}
+		delta := &model.WorldLine{
+			EraSummary:       payload.WorldLineDelta.EraSummary,
+			HistoricalTrend:  payload.WorldLineDelta.HistoricalTrend,
+			DailyLifeContext: payload.WorldLineDelta.DailyLifeContext,
+			Events:           payload.WorldLineDelta.Events,
+		}
+		store.AppendWorldLineDelta(prevWL, delta, nextSeq)
+		prevWL.UpdatedAt = time.Now()
+		_ = g.char.persistWorldLine(timelineID, prevWL)
+		return
+	}
+
+	if gapEnd <= lastWLYear {
+		return
+	}
+	gapStart := lastWLYear + 1
+	if gapStart <= 0 {
+		gapStart = store.MinNodeYear(nodes)
+		if gapStart <= 0 {
+			gapStart = 1
+		}
+	}
+	if prevWL == nil {
+		prevWL = &model.WorldLine{TimelineID: timelineID}
+	}
+	gapWL, err := g.char.generateWorldLineForTimeline(ctx, mode, profile, apiModel, gapStart, gapEnd, nodes, "")
+	if err != nil {
+		log.Printf("[game] 世界线背景补全失败: %v", err)
+		return
+	}
+	if gapWL == nil || len(gapWL.Events) == 0 {
+		return
+	}
+	for i := range gapWL.Events {
+		gapWL.Events[i].DivergenceNote = ""
+		gapWL.Events[i].CausedByNodeSeq = nil
+	}
+	delta := &model.WorldLine{
+		EraSummary:       gapWL.EraSummary,
+		HistoricalTrend:  gapWL.HistoricalTrend,
+		DailyLifeContext: gapWL.DailyLifeContext,
+		Events:           gapWL.Events,
+	}
+	store.AppendWorldLineDelta(prevWL, delta, 0)
+	prevWL.UpdatedAt = time.Now()
+	_ = g.char.persistWorldLine(timelineID, prevWL)
 }
 
 func truncateLabel(s string, max int) string {

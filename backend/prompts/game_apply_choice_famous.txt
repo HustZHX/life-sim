@@ -6,7 +6,8 @@
 - profile_updates 仅包含需要变化的字段（中文值）
 - world_line_delta.events 仅包含 year 严格大于「已有世界线最后事件年份」且 <= next_node.year 的新事件；不要重复或改写过去事件
 - 若抉择偏离史实，affects_history 为 true，新事件须带 divergence_note，并设置 caused_by_node_sequence 为 next_node 的 sequence
-- 若抉择仅影响个人日常、未改变天下大势、本时段无新的历史级大事：world_line_changed 为 false，major_events 为空数组，world_line_delta 仅含空 events（勿填 trend/era 补丁）
+- 若抉择仅影响个人日常、未改写史实走向：world_line_changed 为 false，major_events 为空；但仍须在 world_line_delta.events 中补充该时段史实或合理时代背景（1～4 条），勿填 divergence_note，caused_by_node_sequence 为 null
+- world_line_changed 为 true 时：新事件可带 divergence_note 与 caused_by_node_sequence（next_node 的 sequence）
 - trait_changes 无变化时填 []；有变化时必须是对象数组，禁止字符串或字符串数组
 - entities 必须是对象 {} 或含 protagonist/persons/places 的对象，禁止字符串
 - scene 必须是对象 {} 或含 scene/weather 等字段的对象；若只写场景地点可用 {"scene":"地点·时辰"}，禁止裸字符串

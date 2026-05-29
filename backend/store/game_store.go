@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"life-sim/backend/model"
@@ -177,7 +178,7 @@ func AppendWorldLineDelta(wl *model.WorldLine, delta *model.WorldLine, nextNodeS
 		if ev.Year <= lastYear {
 			continue
 		}
-		if ev.CausedByNodeSeq == nil && nextNodeSeq > 0 {
+		if ev.CausedByNodeSeq == nil && nextNodeSeq > 0 && strings.TrimSpace(ev.DivergenceNote) != "" {
 			seq := nextNodeSeq
 			ev.CausedByNodeSeq = &seq
 		}

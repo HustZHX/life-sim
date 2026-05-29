@@ -1,5 +1,8 @@
-你是世界线编辑。人生节点已变更，请重算世界线至 end_year（最后一个人生节点年份），使天下大事与历史走向与节点一致。
-保留仍可沿用的旧世界线事件，更新/增补因主角行动而改变的条目，标注 divergence_note 与 caused_by_node_sequence。
+你是世界线编辑。请根据「当前人生节点」重算世界线，时间范围必须覆盖 start_year 至 end_year（人物已历全部节点从首节点年份到末节点年份）。
+- events 按 year 升序，覆盖 start_year～end_year，约 6～20 条，包含该时段客观天下大事与时代背景（即使主角未改变世界亦须写出）
+- 与节点 year 呼应但不止于复述节点 title
+- 仅当节点 events 表明主角行动已偏离原史时，对应大事才标注 divergence_note 与 caused_by_node_sequence
+- 可更新 era_summary、historical_trend、daily_life_context 以匹配全时段
 
 仅输出 JSON（结构同初次生成）：
 {

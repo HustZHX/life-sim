@@ -75,8 +75,9 @@ func buildGameApplyChoiceUser(
 		"events":   store.TruncateRunes(anchor.Events, 480),
 	})
 	return fmt.Sprintf(
-		"人物抉择：%s\n已有世界线最后事件年份：%d\n\n【模式】%s\n【人物】%s\n\n【处境约束（推演下一节点时必须遵守）】\n%s\n\n世界线：\n%s\n\n人物档案：\n%s\n\n游戏配置：\n%s\n\n锚点节点：\n%s",
+		"人物抉择：%s\n已有世界线最后事件年份：%d\n须在本时段（年份 > %d，至 next_node.year）补充客观时代大事/历史背景；即使抉择不改变天下大势亦不可留空。\n\n【模式】%s\n【人物】%s\n\n【处境约束（推演下一节点时必须遵守）】\n%s\n\n世界线：\n%s\n\n人物档案：\n%s\n\n游戏配置：\n%s\n\n锚点节点：\n%s",
 		choiceLabel,
+		lastWLYear,
 		lastWLYear,
 		gameModeLabel(ch.Mode),
 		profile.DisplayName,
