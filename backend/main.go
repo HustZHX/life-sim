@@ -99,6 +99,7 @@ func main() {
 		v1.POST("/auth/gate", authHandler.Gate)
 		v1.POST("/auth/login", authHandler.Login)
 		v1.POST("/auth/refresh", authHandler.Refresh)
+		v1.POST("/auth/clear-session", authHandler.ClearSession)
 
 		protected := v1.Group("")
 		protected.Use(authMW.GateRequired(), authMW.AuthRequired())

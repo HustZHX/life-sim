@@ -6,6 +6,18 @@ export type { AIModelId }
 
 const http = axios.create({ baseURL: '', timeout: 60000, withCredentials: true })
 
+/** 路由 bootstrap 期间禁止整页跳转，避免登录页刷新死循环 */
+let authBootstrap = false
+export function setAuthBootstrap(active: boolean) {
+  authBootstrap = active
+}
+
+function isAuthPagePath(): boolean {
+  if (typeof window === 'undefined') return false
+  const p = window.location.pathname
+  return p === '/login' || p === '/gate'
+}
+
 export interface AuthStatus {
   enabled: boolean
   gate_passed: boolean
@@ -567,19 +579,31 @@ http.interceptors.response.use(
         await refreshAuthSession()
         return http(config)
       } catch {
-        if (typeof window !== 'undefined') window.location.href = '/login'
+        if (typeof window !== 'undefined' && !authBootstrap && !isAuthPagePath()) {
+          window.location.href = '/login'
+        }
         throw error
       }
     }
 
-    if (status === 401 && msg === 'gate_required' && !url.includes('/auth/gate')) {
+    if (
+      status === 401 &&
+      msg === 'gate_required' &&
+      !url.includes('/auth/gate') &&
+      !authBootstrap &&
+      !isAuthPagePath()
+    ) {
       if (typeof window !== 'undefined') window.location.href = '/gate'
     }
     if (
       status === 401 &&
       (msg === 'login_required' || msg === 'token_expired') &&
       !url.includes('/auth/login') &&
-      !url.includes('/auth/gate')
+      !url.includes('/auth/gate') &&
+      !url.includes('/auth/status') &&
+      !url.includes('/auth/clear-session') &&
+      !authBootstrap &&
+      !isAuthPagePath()
     ) {
       if (typeof window !== 'undefined') window.location.href = '/login'
     }
@@ -597,6 +621,8 @@ export const api = {
     unwrap<AuthUser>(http.post('/api/v1/auth/login', { username, password })),
 
   authRefresh: () => unwrap<{ ok: boolean }>(http.post('/api/v1/auth/refresh')),
+
+  authClearSession: () => unwrap<{ ok: boolean }>(http.post('/api/v1/auth/clear-session')),
 
   authMe: () => unwrap<AuthUser>(http.get('/api/v1/auth/me')),
 

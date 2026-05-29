@@ -28,7 +28,18 @@ func SetTokenCookie(c *gin.Context, cfg CookieConfig, name, value string, ttl ti
 
 func ClearAuthCookies(c *gin.Context, cfg CookieConfig) {
 	for _, name := range []string{CookieGate, CookieAccess, CookieRefresh} {
-		c.SetSameSite(http.SameSiteLaxMode)
-		c.SetCookie(name, "", -1, "/", "", cfg.Secure, true)
+		clearCookie(c, cfg, name)
 	}
+}
+
+// ClearLoginCookies 仅清除登录相关 Cookie，保留进门凭证。
+func ClearLoginCookies(c *gin.Context, cfg CookieConfig) {
+	for _, name := range []string{CookieAccess, CookieRefresh} {
+		clearCookie(c, cfg, name)
+	}
+}
+
+func clearCookie(c *gin.Context, cfg CookieConfig, name string) {
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(name, "", -1, "/", "", cfg.Secure, true)
 }

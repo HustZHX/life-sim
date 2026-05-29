@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { api, type AuthUser } from '@/api/client'
+import { api, setAuthBootstrap, type AuthUser } from '@/api/client'
 
 export const useAuthStore = defineStore('auth', () => {
   const enabled = ref(false)
@@ -10,12 +10,13 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function loadStatus() {
     checking.value = true
+    setAuthBootstrap(true)
     try {
       const status = await api.authStatus()
       enabled.value = status.enabled
       gatePassed.value = status.gate_passed
       if (status.logged_in) {
-        user.value = await api.authMe()
+        user.value = await resolveLoggedInUser()
       } else {
         user.value = null
       }
@@ -24,7 +25,26 @@ export const useAuthStore = defineStore('auth', () => {
       gatePassed.value = false
       user.value = null
     } finally {
+      setAuthBootstrap(false)
       checking.value = false
+    }
+  }
+
+  async function resolveLoggedInUser(): Promise<AuthUser | null> {
+    try {
+      return await api.authMe()
+    } catch {
+      try {
+        await api.authRefresh()
+        return await api.authMe()
+      } catch {
+        try {
+          await api.authClearSession()
+        } catch {
+          // ignore
+        }
+        return null
+      }
     }
   }
 

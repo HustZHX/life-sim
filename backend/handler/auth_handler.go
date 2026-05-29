@@ -89,6 +89,12 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	})
 }
 
+// ClearSession 清除陈旧登录 Cookie（公开接口，用于修复无效 access/refresh 导致的客户端循环）。
+func (h *AuthHandler) ClearSession(c *gin.Context) {
+	auth.ClearLoginCookies(c, h.svc.CookieConfig())
+	OK(c, gin.H{"ok": true})
+}
+
 func (h *AuthHandler) Refresh(c *gin.Context) {
 	if !h.svc.Config().Enabled {
 		OK(c, gin.H{"enabled": false})
