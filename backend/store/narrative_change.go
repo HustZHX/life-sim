@@ -20,9 +20,9 @@ type NarrativeChangeOperation struct {
 	Events              string              `json:"events,omitempty"`
 	Thoughts            string              `json:"thoughts,omitempty"`
 	PersonalitySnapshot string              `json:"personality_snapshot,omitempty"`
-	TraitChanges        json.RawMessage     `json:"trait_changes,omitempty"`
-	Entities            *model.NodeEntities `json:"entities,omitempty"`
-	Scene               *model.NodeScene    `json:"scene,omitempty"`
+	TraitChanges json.RawMessage `json:"trait_changes,omitempty"`
+	Entities     json.RawMessage `json:"entities,omitempty"`
+	Scene        json.RawMessage `json:"scene,omitempty"`
 }
 
 // NarrativeChangePlan AI 规划的叙述变更
@@ -135,11 +135,19 @@ func applyModifyOp(nodes *[]model.LifeNode, op NarrativeChangeOperation, protago
 			}
 			n.TraitChanges = traits
 		}
-		if op.Entities != nil {
-			n.Entities = NormalizeNodeEntities(op.Entities, protagonistName)
+		if len(op.Entities) > 0 {
+			entities, err := ParseEntitiesJSON(op.Entities, protagonistName)
+			if err != nil {
+				return err
+			}
+			n.Entities = entities
 		}
-		if op.Scene != nil {
-			n.Scene = NormalizeNodeScene(op.Scene)
+		if len(op.Scene) > 0 {
+			scene, err := ParseSceneJSON(op.Scene)
+			if err != nil {
+				return err
+			}
+			n.Scene = scene
 		}
 		return nil
 	}
@@ -166,6 +174,14 @@ func applyInsertAfterOp(
 	if err != nil {
 		return nil, err
 	}
+	entities, err := ParseEntitiesJSON(op.Entities, protagonistName)
+	if err != nil {
+		return nil, err
+	}
+	scene, err := ParseSceneJSON(op.Scene)
+	if err != nil {
+		return nil, err
+	}
 	newNode := model.LifeNode{
 		ID:                  uuid.New().String(),
 		CharacterID:         characterID,
@@ -177,8 +193,8 @@ func applyInsertAfterOp(
 		Thoughts:            op.Thoughts,
 		PersonalitySnapshot: op.PersonalitySnapshot,
 		TraitChanges:        traits,
-		Entities:            NormalizeNodeEntities(op.Entities, protagonistName),
-		Scene:               NormalizeNodeScene(op.Scene),
+		Entities:            entities,
+		Scene:               scene,
 	}
 
 	out := make([]model.LifeNode, 0, len(nodes)+1)

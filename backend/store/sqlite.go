@@ -837,9 +837,9 @@ func ParseTimelineNodes(raw string, characterID, versionID, protagonistName stri
 			Events              string              `json:"events"`
 			Thoughts            string              `json:"thoughts"`
 			PersonalitySnapshot string              `json:"personality_snapshot"`
-			TraitChanges        json.RawMessage     `json:"trait_changes"`
-			Entities            *model.NodeEntities `json:"entities"`
-			Scene               *model.NodeScene    `json:"scene"`
+			TraitChanges json.RawMessage `json:"trait_changes"`
+			Entities     json.RawMessage `json:"entities"`
+			Scene        json.RawMessage `json:"scene"`
 		} `json:"nodes"`
 	}
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
@@ -848,6 +848,14 @@ func ParseTimelineNodes(raw string, characterID, versionID, protagonistName stri
 	nodes := make([]model.LifeNode, 0, len(resp.Nodes))
 	for _, n := range resp.Nodes {
 		traits, err := ParseTraitChangesJSON(n.TraitChanges)
+		if err != nil {
+			return nil, err
+		}
+		entities, err := ParseEntitiesJSON(n.Entities, protagonistName)
+		if err != nil {
+			return nil, err
+		}
+		scene, err := ParseSceneJSON(n.Scene)
 		if err != nil {
 			return nil, err
 		}
@@ -863,8 +871,8 @@ func ParseTimelineNodes(raw string, characterID, versionID, protagonistName stri
 			Thoughts:            n.Thoughts,
 			PersonalitySnapshot: n.PersonalitySnapshot,
 			TraitChanges:        traits,
-			Entities:            NormalizeNodeEntities(n.Entities, protagonistName),
-			Scene:               NormalizeNodeScene(n.Scene),
+			Entities:            entities,
+			Scene:               scene,
 		})
 	}
 	return nodes, nil
@@ -879,9 +887,9 @@ func ParseInnerCurrent(raw string, protagonistName string) (thoughts, personalit
 	var resp struct {
 		Thoughts            string              `json:"thoughts"`
 		PersonalitySnapshot string              `json:"personality_snapshot"`
-		TraitChanges        json.RawMessage     `json:"trait_changes"`
-		Entities            *model.NodeEntities `json:"entities"`
-		Scene               *model.NodeScene    `json:"scene"`
+		TraitChanges json.RawMessage `json:"trait_changes"`
+		Entities     json.RawMessage `json:"entities"`
+		Scene        json.RawMessage `json:"scene"`
 	}
 	if err = json.Unmarshal([]byte(raw), &resp); err != nil {
 		return
@@ -890,7 +898,17 @@ func ParseInnerCurrent(raw string, protagonistName string) (thoughts, personalit
 	if err != nil {
 		return
 	}
-	return resp.Thoughts, resp.PersonalitySnapshot, traits, NormalizeNodeEntities(resp.Entities, protagonistName), NormalizeNodeScene(resp.Scene), nil
+	entities, e2 := ParseEntitiesJSON(resp.Entities, protagonistName)
+	if e2 != nil {
+		err = e2
+		return
+	}
+	scene, e3 := ParseSceneJSON(resp.Scene)
+	if e3 != nil {
+		err = e3
+		return
+	}
+	return resp.Thoughts, resp.PersonalitySnapshot, traits, entities, scene, nil
 }
 
 type InnerSubsequentPatch struct {
@@ -907,9 +925,9 @@ func ParseInnerSubsequent(raw string, protagonistName string) (map[int]InnerSubs
 			Sequence            int                 `json:"sequence"`
 			Thoughts            string              `json:"thoughts"`
 			PersonalitySnapshot string              `json:"personality_snapshot"`
-			TraitChanges        json.RawMessage     `json:"trait_changes"`
-			Entities            *model.NodeEntities `json:"entities"`
-			Scene               *model.NodeScene    `json:"scene"`
+			TraitChanges json.RawMessage `json:"trait_changes"`
+			Entities     json.RawMessage `json:"entities"`
+			Scene        json.RawMessage `json:"scene"`
 		} `json:"nodes"`
 	}
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
@@ -921,12 +939,20 @@ func ParseInnerSubsequent(raw string, protagonistName string) (map[int]InnerSubs
 		if err != nil {
 			return nil, err
 		}
+		entities, err := ParseEntitiesJSON(n.Entities, protagonistName)
+		if err != nil {
+			return nil, err
+		}
+		scene, err := ParseSceneJSON(n.Scene)
+		if err != nil {
+			return nil, err
+		}
 		m[n.Sequence] = InnerSubsequentPatch{
 			Thoughts:            n.Thoughts,
 			PersonalitySnapshot: n.PersonalitySnapshot,
 			TraitChanges:        traits,
-			Entities:            NormalizeNodeEntities(n.Entities, protagonistName),
-			Scene:               NormalizeNodeScene(n.Scene),
+			Entities:            entities,
+			Scene:               scene,
 		}
 	}
 	return m, nil

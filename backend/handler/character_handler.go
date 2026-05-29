@@ -204,7 +204,7 @@ func (h *CharacterHandler) GetTimeline(c *gin.Context) {
 	}
 	resp := gin.H{"timeline": tl, "version": ver, "nodes": nodes}
 	if ch, err := h.svc.GetCharacter(id); err == nil && ch.PlayStyle == model.PlayStyleGame && ver != nil {
-		if choices, err := h.svc.ListGameChoiceDisplays(ver.ID); err == nil && len(choices) > 0 {
+		if choices, err := h.svc.ListGameChoiceDisplays(ver.ID, nodes); err == nil && len(choices) > 0 {
 			resp["game_choices"] = choices
 		}
 	}

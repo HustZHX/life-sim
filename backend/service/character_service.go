@@ -648,11 +648,11 @@ func (s *CharacterService) resolveTimelineScope(ch *model.Character, timelineID 
 	return list[0].ID, nil
 }
 
-func (s *CharacterService) ListGameChoiceDisplays(versionID string) ([]model.GameNodeChoiceDisplay, error) {
+func (s *CharacterService) ListGameChoiceDisplays(versionID string, nodes []model.LifeNode) ([]model.GameNodeChoiceDisplay, error) {
 	if s.game == nil {
 		return nil, nil
 	}
-	return s.game.ListChoiceDisplays(versionID)
+	return s.game.ListChoiceDisplays(versionID, nodes)
 }
 
 func (s *CharacterService) GetTimeline(characterID, timelineID, versionID string) (*model.Timeline, []model.LifeNode, *model.TimelineVersion, error) {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"life-sim/backend/model"
@@ -69,15 +70,31 @@ func marshalEntities(e *model.NodeEntities) string {
 }
 
 func parseEntitiesJSON(raw string) *model.NodeEntities {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "{}" {
-		return nil
+	e, _ := ParseEntitiesJSON(json.RawMessage(raw), "")
+	return e
+}
+
+// ParseEntitiesJSON 容错解析 AI 返回的 entities（对象、JSON 字符串；非法则忽略）。
+func ParseEntitiesJSON(data json.RawMessage, defaultProtagonist string) (*model.NodeEntities, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return nil, nil
 	}
 	var e model.NodeEntities
-	if err := json.Unmarshal([]byte(raw), &e); err != nil {
-		return nil
+	if err := json.Unmarshal(data, &e); err == nil {
+		return NormalizeNodeEntities(&e, defaultProtagonist), nil
 	}
-	return NormalizeNodeEntities(&e, "")
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		str = strings.TrimSpace(str)
+		if str == "" {
+			return nil, nil
+		}
+		if strings.HasPrefix(str, "{") {
+			return parseEntitiesJSON(str), nil
+		}
+		return nil, nil
+	}
+	return nil, fmt.Errorf("invalid entities format")
 }
 
 func sortEntitiesByLength(items []string) []string {

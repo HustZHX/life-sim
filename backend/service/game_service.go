@@ -629,7 +629,7 @@ func (g *GameService) generateAndSaveNodeChoices(ctx context.Context, characterI
 	return g.store.SaveGameNodeChoices(characterID, nodeID, versionID, node.Sequence, &model.GameNodeChoiceRecord{Options: opts})
 }
 
-func (g *GameService) ListChoiceDisplays(versionID string) ([]model.GameNodeChoiceDisplay, error) {
+func (g *GameService) ListChoiceDisplays(versionID string, nodes []model.LifeNode) ([]model.GameNodeChoiceDisplay, error) {
 	rows, err := g.store.ListGameNodeChoicesByVersion(versionID)
 	if err != nil {
 		return nil, err
@@ -640,8 +640,12 @@ func (g *GameService) ListChoiceDisplays(versionID string) ([]model.GameNodeChoi
 		if text == "" {
 			continue
 		}
+		nodeID := row.NodeID
+		if id := findNodeIDBySequence(nodes, row.NodeSequence); id != "" {
+			nodeID = id
+		}
 		out = append(out, model.GameNodeChoiceDisplay{
-			NodeID: row.NodeID, NodeSequence: row.NodeSequence, DisplayText: text,
+			NodeID: nodeID, NodeSequence: row.NodeSequence, DisplayText: text,
 		})
 	}
 	return out, nil
@@ -848,7 +852,10 @@ func (g *GameService) runGameChoose(ctx context.Context, jobID, characterID stri
 		return
 	}
 
-	store.MergeProfile(profile, payload.ProfileUpdates)
+	if err := store.ApplyProfileUpdatesFromJSON(profile, payload.ProfileUpdates); err != nil {
+		g.char.failJob(job, err.Error())
+		return
+	}
 	if err := g.store.SaveProfile(profile); err != nil {
 		g.char.failJob(job, err.Error())
 		return
@@ -867,7 +874,7 @@ func (g *GameService) runGameChoose(ctx context.Context, jobID, characterID stri
 		Thoughts:            payload.NextNode.Thoughts,
 		PersonalitySnapshot: payload.NextNode.PersonalitySnapshot,
 		TraitChanges:        store.NormalizeTraitChanges(payload.NextNode.TraitChanges),
-		Entities:            payload.NextNode.Entities,
+		Entities:            store.NormalizeNodeEntities(payload.NextNode.Entities, profile.DisplayName),
 		Scene:               payload.NextNode.Scene,
 	}
 	if nextNode.Age <= 0 && profile.BirthYear > 0 && nextNode.Year > 0 {

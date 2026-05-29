@@ -111,8 +111,8 @@ func ApplyProfileFieldValue(p *model.Profile, field string, raw json.RawMessage)
 		}
 		return nil
 	default:
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
+		s, err := jsonScalarToString(raw)
+		if err != nil {
 			return err
 		}
 		switch field {
@@ -159,6 +159,50 @@ func ApplyProfileFieldValue(p *model.Profile, field string, raw json.RawMessage)
 		}
 		return nil
 	}
+}
+
+// ApplyProfileUpdatesFromJSON 将 AI 返回的 profile_updates 合并到档案（值可为字符串或数字）。
+func ApplyProfileUpdatesFromJSON(p *model.Profile, data json.RawMessage) error {
+	if p == nil || len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("profile_updates: %w", err)
+	}
+	for field, raw := range fields {
+		if len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		if s, err := jsonScalarToString(raw); err == nil && strings.TrimSpace(s) == "" {
+			continue
+		}
+		if err := ApplyProfileFieldValue(p, field, raw); err != nil {
+			// 忽略未知字段，避免 AI 多写字段导致整次抉择失败
+			continue
+		}
+	}
+	return nil
+}
+
+func jsonScalarToString(raw json.RawMessage) (string, error) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n.String(), nil
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		return strconv.FormatFloat(f, 'f', -1, 64), nil
+	}
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		return strconv.FormatBool(b), nil
+	}
+	return "", fmt.Errorf("unsupported scalar")
 }
 
 func ParseSuggestNamesResult(raw string) ([]string, error) {

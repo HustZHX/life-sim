@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"life-sim/backend/model"
@@ -36,13 +37,29 @@ func marshalScene(s *model.NodeScene) string {
 }
 
 func parseSceneJSON(raw string) *model.NodeScene {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "{}" {
-		return nil
+	s, _ := ParseSceneJSON(json.RawMessage(raw))
+	return s
+}
+
+// ParseSceneJSON 容错解析 AI 返回的 scene（对象、JSON 字符串或纯文本场景描述）。
+func ParseSceneJSON(data json.RawMessage) (*model.NodeScene, error) {
+	if len(data) == 0 || string(data) == "null" {
+		return nil, nil
 	}
 	var s model.NodeScene
-	if err := json.Unmarshal([]byte(raw), &s); err != nil {
-		return nil
+	if err := json.Unmarshal(data, &s); err == nil {
+		return NormalizeNodeScene(&s), nil
 	}
-	return NormalizeNodeScene(&s)
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		str = strings.TrimSpace(str)
+		if str == "" {
+			return nil, nil
+		}
+		if strings.HasPrefix(str, "{") {
+			return parseSceneJSON(str), nil
+		}
+		return NormalizeNodeScene(&model.NodeScene{Scene: str}), nil
+	}
+	return nil, fmt.Errorf("invalid scene format")
 }

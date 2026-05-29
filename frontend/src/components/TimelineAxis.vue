@@ -45,9 +45,18 @@ const worldSimLabel = computed(() => props.tailSimulatingLabel || '世界模拟�
 
 const expandedIds = ref<Set<string>>(new Set())
 const expandedWorldIds = ref<Set<string>>(new Set())
+const expandedChoiceIds = ref<Set<string>>(new Set())
+
+const hasGameChoices = computed(() => (props.gameChoices?.length ?? 0) > 0)
 
 const showFullContent = (nodeId: string) => expandedIds.value.has(nodeId)
 const showWorldFull = (id: string) => expandedWorldIds.value.has(id)
+
+function choiceExpandKey(nodeId: string) {
+  return `choice-${nodeId}`
+}
+
+const showChoiceFull = (nodeId: string) => expandedChoiceIds.value.has(choiceExpandKey(nodeId))
 
 function contextFor(node: LifeNode) {
   return entityContextFromNode(node, props.profile ?? null)
@@ -67,12 +76,26 @@ function toggleWorld(id: string) {
   expandedWorldIds.value = next
 }
 
+function toggleChoiceExpand(nodeId: string) {
+  const key = choiceExpandKey(nodeId)
+  const next = new Set(expandedChoiceIds.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expandedChoiceIds.value = next
+}
+
 function expandAll() {
   expandedIds.value = new Set(props.nodes.map((n) => n.id))
+  if (hasGameChoices.value) {
+    expandedChoiceIds.value = new Set(
+      props.nodes.filter((n) => choiceForNode(n)).map((n) => choiceExpandKey(n.id))
+    )
+  }
 }
 
 function collapseAll() {
   expandedIds.value = new Set()
+  expandedChoiceIds.value = new Set()
 }
 
 type AxisItem =
@@ -109,10 +132,19 @@ function canRollbackTo(node: LifeNode) {
   return !!props.rollbackEnabled && node.sequence < maxSequence.value
 }
 
-function choiceAfterNode(nodeId: string): string | null {
-  const hit = props.gameChoices?.find((c) => c.node_id === nodeId)
-  const text = hit?.display_text?.trim()
-  return text || null
+function choiceForNode(node: LifeNode) {
+  const list = props.gameChoices ?? []
+  const byId = list.find((c) => c.node_id === node.id)
+  if (byId?.display_text?.trim()) return byId
+  const bySeq = list.find((c) => c.node_sequence === node.sequence)
+  if (bySeq?.display_text?.trim()) return bySeq
+  return null
+}
+
+function choiceSnippet(text: string, max = 40) {
+  const t = text.trim()
+  if (t.length <= max) return t
+  return `${t.slice(0, max)}…`
 }
 </script>
 
@@ -252,7 +284,7 @@ function choiceAfterNode(nodeId: string): string | null {
       </div>
 
       <div
-        v-if="item.kind === 'node' && choiceAfterNode(item.node.id)"
+        v-if="item.kind === 'node' && choiceForNode(item.node)"
         class="axis-row axis-row--choice"
       >
         <div class="axis-col axis-col--world" />
@@ -260,9 +292,30 @@ function choiceAfterNode(nodeId: string): string | null {
           <div class="axis-dot axis-dot--choice" />
         </div>
         <div class="axis-col axis-col--node">
-          <div class="game-choice-bridge" role="note">
-            <span class="game-choice-bridge__label">人生抉择</span>
-            <p class="game-choice-bridge__text">{{ choiceAfterNode(item.node.id) }}</p>
+          <div
+            class="game-choice-bridge"
+            :class="{ expanded: showChoiceFull(item.node.id) }"
+            role="note"
+            @click="toggleChoiceExpand(item.node.id)"
+          >
+            <div class="game-choice-bridge__head">
+              <span class="game-choice-bridge__label">人生抉择</span>
+              <el-button
+                size="small"
+                text
+                type="primary"
+                class="game-choice-expand-btn"
+                @click.stop="toggleChoiceExpand(item.node.id)"
+              >
+                {{ showChoiceFull(item.node.id) ? '收起' : '展开' }}
+              </el-button>
+            </div>
+            <p v-if="showChoiceFull(item.node.id)" class="game-choice-bridge__text">
+              {{ choiceForNode(item.node)?.display_text }}
+            </p>
+            <p v-else class="game-choice-bridge__snippet">
+              {{ choiceSnippet(choiceForNode(item.node)?.display_text ?? '') }}
+            </p>
           </div>
         </div>
       </div>
@@ -471,11 +524,28 @@ function choiceAfterNode(nodeId: string): string | null {
   border-radius: 8px;
   border: 1px dashed #b3d8ff;
   background: linear-gradient(135deg, #f5faff 0%, #ecf5ff 100%);
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.game-choice-bridge:hover {
+  border-color: #79bbff;
+}
+
+.game-choice-bridge.expanded {
+  border-color: #409eff;
+  box-shadow: 0 0 0 1px rgba(64, 158, 255, 0.2);
+}
+
+.game-choice-bridge__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
 }
 
 .game-choice-bridge__label {
-  display: inline-block;
-  margin-bottom: 4px;
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -483,11 +553,25 @@ function choiceAfterNode(nodeId: string): string | null {
   text-transform: uppercase;
 }
 
+.game-choice-expand-btn {
+  flex-shrink: 0;
+  padding: 0 4px;
+}
+
 .game-choice-bridge__text {
   margin: 0;
   font-size: 0.88rem;
-  line-height: 1.5;
+  line-height: 1.55;
   color: #303133;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.game-choice-bridge__snippet {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: #606266;
 }
 
 .axis-timestamp {

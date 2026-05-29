@@ -31,9 +31,9 @@ type TimelineExpandNode struct {
 	Events              string              `json:"events"`
 	Thoughts            string              `json:"thoughts"`
 	PersonalitySnapshot string              `json:"personality_snapshot"`
-	TraitChanges        json.RawMessage     `json:"trait_changes"`
-	Entities            *model.NodeEntities `json:"entities"`
-	Scene               *model.NodeScene    `json:"scene"`
+	TraitChanges json.RawMessage `json:"trait_changes"`
+	Entities     json.RawMessage `json:"entities"`
+	Scene        json.RawMessage `json:"scene"`
 }
 
 func ParseTimelineSkeleton(raw string) ([]TimelineSkeletonNode, error) {
@@ -78,6 +78,14 @@ func MergeSkeletonAndExpand(
 		if err != nil {
 			return nil, err
 		}
+		entities, err := ParseEntitiesJSON(ex.Entities, protagonistName)
+		if err != nil {
+			return nil, err
+		}
+		scene, err := ParseSceneJSON(ex.Scene)
+		if err != nil {
+			return nil, err
+		}
 		nodes = append(nodes, model.LifeNode{
 			ID:                  uuid.New().String(),
 			CharacterID:         characterID,
@@ -90,8 +98,8 @@ func MergeSkeletonAndExpand(
 			Thoughts:            ex.Thoughts,
 			PersonalitySnapshot: ex.PersonalitySnapshot,
 			TraitChanges:        traits,
-			Entities:            NormalizeNodeEntities(ex.Entities, protagonistName),
-			Scene:               NormalizeNodeScene(ex.Scene),
+			Entities:            entities,
+			Scene:               scene,
 		})
 	}
 	return nodes, nil

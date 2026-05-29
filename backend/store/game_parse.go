@@ -59,43 +59,101 @@ func ParseGameChoices(raw string) ([]model.GameChoiceOption, error) {
 	return out, nil
 }
 
+type gameApplyNextNode struct {
+	Year                int                 `json:"year"`
+	Age                 int                 `json:"age"`
+	Title               string              `json:"title"`
+	Events              string              `json:"events"`
+	Thoughts            string              `json:"thoughts"`
+	PersonalitySnapshot string              `json:"personality_snapshot"`
+	TraitChanges json.RawMessage `json:"trait_changes"`
+	Entities     json.RawMessage `json:"entities"`
+	Scene        json.RawMessage `json:"scene"`
+}
+
 type gameApplyChoicePayload struct {
-	NextNode struct {
-		Year                int                 `json:"year"`
-		Age                 int                 `json:"age"`
-		Title               string              `json:"title"`
-		Events              string              `json:"events"`
-		Thoughts            string              `json:"thoughts"`
-		PersonalitySnapshot string              `json:"personality_snapshot"`
-		TraitChanges        []model.TraitChange `json:"trait_changes"`
-		Entities            *model.NodeEntities `json:"entities"`
-		Scene               *model.NodeScene    `json:"scene"`
-	} `json:"next_node"`
-	ProfileUpdates   map[string]string `json:"profile_updates"`
-	AffectsHistory   bool              `json:"affects_history"`
-	WorldLineChanged *bool             `json:"world_line_changed"`
-	MajorEvents      []string          `json:"major_events"`
+	NextNode         gameApplyNextNodeParsed `json:"next_node"`
+	ProfileUpdates   json.RawMessage         `json:"profile_updates"`
+	AffectsHistory   bool                    `json:"affects_history"`
+	WorldLineChanged *bool                   `json:"world_line_changed"`
+	MajorEvents      []string                `json:"major_events"`
 	WorldLineDelta   struct {
-		EraSummary            string               `json:"era_summary"`
-		HistoricalTrend       string               `json:"historical_trend_patch"`
-		HistoricalTrendPatch  string               `json:"historical_trend"` // alias
-		DailyLifeContext      string               `json:"daily_life_context"`
-		Events                []model.WorldLineEvent `json:"events"`
+		EraSummary           string                 `json:"era_summary"`
+		HistoricalTrend      string                 `json:"historical_trend_patch"`
+		HistoricalTrendPatch string                 `json:"historical_trend"` // alias
+		DailyLifeContext     string                 `json:"daily_life_context"`
+		Events               []model.WorldLineEvent `json:"events"`
 	} `json:"world_line_delta"`
 }
 
+// gameApplyNextNodeParsed 由 ParseGameApplyChoice 填充（trait_changes 已容错解析）。
+type gameApplyNextNodeParsed struct {
+	Year                int
+	Age                 int
+	Title               string
+	Events              string
+	Thoughts            string
+	PersonalitySnapshot string
+	TraitChanges        []model.TraitChange
+	Entities            *model.NodeEntities
+	Scene               *model.NodeScene
+}
+
 func ParseGameApplyChoice(raw string) (*gameApplyChoicePayload, error) {
-	var p gameApplyChoicePayload
-	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+	var j struct {
+		NextNode         gameApplyNextNode `json:"next_node"`
+		ProfileUpdates   json.RawMessage `json:"profile_updates"`
+		AffectsHistory   bool              `json:"affects_history"`
+		WorldLineChanged *bool             `json:"world_line_changed"`
+		MajorEvents      []string          `json:"major_events"`
+		WorldLineDelta   struct {
+			EraSummary           string                 `json:"era_summary"`
+			HistoricalTrend      string                 `json:"historical_trend_patch"`
+			HistoricalTrendPatch string                 `json:"historical_trend"`
+			DailyLifeContext     string                 `json:"daily_life_context"`
+			Events               []model.WorldLineEvent `json:"events"`
+		} `json:"world_line_delta"`
+	}
+	if err := json.Unmarshal([]byte(raw), &j); err != nil {
 		return nil, err
 	}
-	if p.NextNode.Title == "" || p.NextNode.Events == "" {
+	if j.NextNode.Title == "" || j.NextNode.Events == "" {
 		return nil, fmt.Errorf("缺少下一节点内容")
+	}
+	traits, err := ParseTraitChangesJSON(j.NextNode.TraitChanges)
+	if err != nil {
+		return nil, fmt.Errorf("trait_changes: %w", err)
+	}
+	entities, err := ParseEntitiesJSON(j.NextNode.Entities, "")
+	if err != nil {
+		return nil, fmt.Errorf("entities: %w", err)
+	}
+	scene, err := ParseSceneJSON(j.NextNode.Scene)
+	if err != nil {
+		return nil, fmt.Errorf("scene: %w", err)
+	}
+	p := &gameApplyChoicePayload{
+		NextNode: gameApplyNextNodeParsed{
+			Year:                j.NextNode.Year,
+			Age:                 j.NextNode.Age,
+			Title:               j.NextNode.Title,
+			Events:              j.NextNode.Events,
+			Thoughts:            j.NextNode.Thoughts,
+			PersonalitySnapshot: j.NextNode.PersonalitySnapshot,
+			TraitChanges:        traits,
+			Entities:            entities,
+			Scene:               scene,
+		},
+		ProfileUpdates:   j.ProfileUpdates,
+		AffectsHistory:   j.AffectsHistory,
+		WorldLineChanged: j.WorldLineChanged,
+		MajorEvents:      j.MajorEvents,
+		WorldLineDelta:   j.WorldLineDelta,
 	}
 	if p.WorldLineDelta.HistoricalTrend == "" {
 		p.WorldLineDelta.HistoricalTrend = p.WorldLineDelta.HistoricalTrendPatch
 	}
-	return &p, nil
+	return p, nil
 }
 
 func hasAppendableWorldLineEvents(delta *gameApplyChoicePayload, lastWLYear int) bool {
