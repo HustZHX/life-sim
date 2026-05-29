@@ -996,12 +996,7 @@ func (s *CharacterService) runRegenerate(ctx context.Context, jobID, characterID
 
 	_, targetNodes := store.ResolveRegenerateTailRange(edited.Year, 0, req.TargetNodeCount)
 
-	setJobStage(s.store, jobID, 25, "正在推演后续节点…")
-	system, err := s.ai.LoadPrompt(fullTailPromptName(ch.Mode))
-	if err != nil {
-		s.failJob(job, err.Error())
-		return
-	}
+	setJobStage(s.store, jobID, 25, "细腻模式：先规划骨架，再叙事扩写…")
 
 	head := "【推演后续】"
 	if req.Mode == model.PatchModeAppendNext {
@@ -1028,11 +1023,11 @@ func (s *CharacterService) runRegenerate(ctx context.Context, jobID, characterID
 		if batchTarget > regenerateTailBatchSize {
 			batchTarget = regenerateTailBatchSize
 		}
-		user := buildRegenerateTailUser(head, batchTarget, profile, store.MarshalNodesLocked(lockedWork), anchor, req)
-		batch, err := s.generateRegenerateTail(
-			ctx, apiModel, system, user,
+		lockedJSON := store.MarshalNodesLocked(lockedWork)
+		batch, err := s.generateRichRegenerateTail(
+			ctx, jobID, apiModel, ch.Mode,
 			characterID, newVersionID, profile.DisplayName,
-			anchor, profile.BirthYear, batchTarget,
+			profile, head, batchTarget, lockedJSON, anchor, req, allNewTail,
 		)
 		if err != nil {
 			close(done)

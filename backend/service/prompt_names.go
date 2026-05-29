@@ -23,6 +23,13 @@ func fullTailPromptName(mode string) string {
 	return "regenerate_full_tail_random.txt"
 }
 
+func tailSkeletonPromptName(mode string) string {
+	if mode == model.ModeFamous {
+		return "regenerate_tail_skeleton_famous.txt"
+	}
+	return "regenerate_tail_skeleton_random.txt"
+}
+
 func gameTimelineToStagePromptName(mode string) string {
 	if mode == model.ModeFamous {
 		return "game_timeline_to_stage_famous.txt"
