@@ -109,27 +109,16 @@ func (s *CharacterService) generateRichRegenerateTail(
 		progress := expandBase + (bi * 40 / max(len(batches), 1))
 		setJobStage(s.store, jobID, progress, fmt.Sprintf("正在叙事扩写后续节点（第 %d/%d 批）…", bi+1, len(batches)))
 
-		user := fmt.Sprintf(
-			"人物档案：\n%s\n\n骨架节点（须逐条扩写，sequence 不可变）：\n%s",
-			profileJSON, store.MarshalSkeletonBatch(batch),
-		)
 		contextNodes := append([]model.LifeNode(nil), priorTail...)
 		contextNodes = append(contextNodes, merged...)
-		if len(contextNodes) > 0 {
-			user += "\n\n前置已扩写节点（性格衔接参考）：\n" + store.MarshalSkeletonContextPrior(contextNodes, 2)
-		}
 
 		done := make(chan struct{})
 		go tickJobProgress(s.store, jobID, progress+1, progress+35/max(len(batches), 1), done)
 
-		raw, err := s.ai.ChatJSONModel(ctx, apiModel, expandPrompt, user)
+		expanded, err := s.expandSkeletonBatchWithContext(ctx, apiModel, expandPrompt, displayName, profileJSON, "", batch, contextNodes)
 		close(done)
 		if err != nil {
-			return nil, fmt.Errorf("后续叙事扩写失败（第 %d 批）: %w", bi+1, err)
-		}
-		expanded, err := store.ParseTimelineExpandBatch(raw, displayName)
-		if err != nil {
-			return nil, fmt.Errorf("后续扩写解析失败（第 %d 批）: %w", bi+1, err)
+			return nil, fmt.Errorf("后续扩写失败（第 %d 批）: %w", bi+1, err)
 		}
 		part, err := store.MergeSkeletonAndExpand(batch, expanded, characterID, versionID, displayName)
 		if err != nil {
