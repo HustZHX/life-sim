@@ -36,9 +36,8 @@ async function submit() {
         <el-form-item>
           <el-input
             v-model="code"
-            type="password"
-            placeholder="进门密码"
-            show-password
+            type="text"
+            placeholder="进门密码（支持中英文与符号）"
             autocomplete="off"
             @keyup.enter="submit"
           />
