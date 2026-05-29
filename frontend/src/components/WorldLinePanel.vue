@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, toRaw, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import type { AIModelId, LifeNode, WorldLine, WorldLineEvent } from '@/api/client'
+import type { LifeNode, WorldLine, WorldLineEvent } from '@/api/client'
 import { api } from '@/api/client'
-import ModelSelector from '@/components/ModelSelector.vue'
-import { DEFAULT_CASCADE_MODEL } from '@/constants/models'
+import { useModelStore } from '@/stores/model'
 
 const props = defineProps<{
   characterId: string
@@ -23,7 +22,7 @@ const emit = defineEmits<{
 
 const editing = ref(false)
 const saving = ref(false)
-const model = ref<AIModelId>(DEFAULT_CASCADE_MODEL)
+const modelStore = useModelStore()
 const draft = ref<WorldLine | null>(null)
 
 function cloneWorldLine<T>(v: T): T {
@@ -92,7 +91,7 @@ async function save(applyToNodes: boolean) {
   try {
     const res = await api.updateWorldLine(props.characterId, props.timelineId, {
       world_line: draft.value,
-      model: model.value,
+      model: modelStore.aiModel,
       apply_to_nodes: applyToNodes,
     })
     emit('updated', res.world_line)
@@ -157,7 +156,6 @@ function nodeLabel(seq?: number | null) {
             <el-input v-model="draft.era_summary" type="textarea" :rows="2" />
           </el-form-item>
         </el-form>
-        <ModelSelector v-model="model" />
       </div>
 
       <el-timeline class="world-events">

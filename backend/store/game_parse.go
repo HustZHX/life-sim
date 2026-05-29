@@ -35,6 +35,19 @@ type gameChoicesPayload struct {
 	} `json:"options"`
 }
 
+func ParseGameProfileRefresh(raw string) (json.RawMessage, error) {
+	var j struct {
+		ProfileUpdates json.RawMessage `json:"profile_updates"`
+	}
+	if err := json.Unmarshal([]byte(raw), &j); err != nil {
+		return nil, err
+	}
+	if len(j.ProfileUpdates) == 0 || string(j.ProfileUpdates) == "null" {
+		return nil, fmt.Errorf("未返回 profile_updates")
+	}
+	return j.ProfileUpdates, nil
+}
+
 func ParseGameChoices(raw string) ([]model.GameChoiceOption, error) {
 	var p gameChoicesPayload
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {

@@ -77,6 +77,21 @@ func (h *GameHandler) GenerateProfile(c *gin.Context) {
 	OK(c, p)
 }
 
+func (h *GameHandler) RefreshProfile(c *gin.Context) {
+	id := c.Param("id")
+	var req model.GameProfileRefreshRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Fail(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+	job, err := h.game.StartRefreshProfileJob(c.Request.Context(), id, req)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	OK(c, job)
+}
+
 func (h *GameHandler) StartTimeline(c *gin.Context) {
 	id := c.Param("id")
 	var req model.GameTimelineStartRequest

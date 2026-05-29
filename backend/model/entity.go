@@ -100,6 +100,17 @@ type GameChoicesResponse struct {
 	AlreadyChosen bool              `json:"already_chosen,omitempty"`
 }
 
+// GameProfileRefreshRequest 根据已历人生节点刷新档案经历摘要等。
+type GameProfileRefreshRequest struct {
+	Model      string `json:"model"`
+	TimelineID string `json:"timeline_id,omitempty"`
+}
+
+// GameProfileRefreshJobRequest Job 请求体。
+type GameProfileRefreshJobRequest struct {
+	TimelineID string `json:"timeline_id"`
+}
+
 // GameChooseRequest 应用抉择。
 type GameChooseRequest struct {
 	Model      string `json:"model"`

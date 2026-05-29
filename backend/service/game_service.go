@@ -571,12 +571,57 @@ func (g *GameService) runGameTimelineStart(ctx context.Context, jobID, character
 }
 
 func (g *GameService) prefetchNodeChoices(ctx context.Context, characterID, nodeID, versionID, modelID string) {
-	if err := g.generateAndSaveNodeChoices(ctx, characterID, nodeID, versionID, modelID); err != nil {
+	if err := g.generateAndSaveNodeChoices(ctx, characterID, nodeID, versionID, modelID, false); err != nil {
 		log.Printf("[game] 预生成抉择选项失败 node=%s: %v", nodeID, err)
 	}
 }
 
-func (g *GameService) generateAndSaveNodeChoices(ctx context.Context, characterID, nodeID, versionID, modelID string) error {
+func (g *GameService) callAIForGameChoices(
+	ctx context.Context,
+	apiModel, system, characterID, versionID string,
+	profile *model.Profile,
+	userFull, followUp string,
+	forceFull bool,
+) (string, error) {
+	profileHash := store.ProfileHash(profile)
+	if !forceFull && followUp != "" {
+		if sess := g.char.aiCache.getGameSession(characterID, versionID, profileHash); sess != nil {
+			raw, err := g.ai.ChatJSONSession(ctx, apiModel, sess, followUp)
+			if err == nil {
+				sess.AppendTurn(followUp, raw)
+				g.char.aiCache.putGameSession(characterID, versionID, sess)
+				return raw, nil
+			}
+		}
+	}
+	raw, err := g.ai.ChatJSONModel(ctx, apiModel, system, userFull)
+	if err != nil {
+		return "", err
+	}
+	g.char.aiCache.putGameSession(characterID, versionID, ai.NewGameSession(characterID, profileHash, system, userFull, raw))
+	return raw, nil
+}
+
+func (g *GameService) appendGameSessionAfterChoice(
+	characterID, versionID string,
+	profile *model.Profile,
+	choiceLabel string,
+	nextSeq int,
+	nextTitle, nextEvents string,
+) {
+	profileHash := store.ProfileHash(profile)
+	sess := g.char.aiCache.getGameSession(characterID, versionID, profileHash)
+	if sess == nil {
+		return
+	}
+	user := fmt.Sprintf("玩家抉择：%s", choiceLabel)
+	asst := fmt.Sprintf("已推演新节点 sequence=%d 标题《%s》；经历摘要：%s",
+		nextSeq, nextTitle, store.TruncateRunes(nextEvents, 240))
+	sess.AppendTurn(user, asst)
+	g.char.aiCache.putGameSession(characterID, versionID, sess)
+}
+
+func (g *GameService) generateAndSaveNodeChoices(ctx context.Context, characterID, nodeID, versionID, modelID string, regenerate bool) error {
 	ch, err := g.ensureGameCharacter(characterID)
 	if err != nil {
 		return err
@@ -601,8 +646,23 @@ func (g *GameService) generateAndSaveNodeChoices(ctx context.Context, characterI
 	if err != nil {
 		return err
 	}
-	user := buildGameNodeChoicesUser(ch, profile, node)
-	raw, err := g.ai.ChatJSONModel(ctx, apiModel, system, user)
+	timeline, _ := g.store.GetTimelineByVersionID(versionID)
+	wlJSON := "{}"
+	if timeline != nil {
+		if wl, wlErr := g.store.GetWorldLine(timeline.ID); wlErr == nil && wl != nil {
+			wlJSON = store.MarshalWorldLineForPrompt(wl)
+		}
+	}
+	allNodes, _ := g.store.GetNodesByVersion(versionID)
+	journeyJSON := store.MarshalNodesJourneyForChoices(allNodes, node.Sequence)
+	choiceHistoryJSON := "[]"
+	if rows, listErr := g.store.ListGameNodeChoicesByVersion(versionID); listErr == nil {
+		choiceHistoryJSON = marshalGameChoiceHistory(allNodes, rows, node.Sequence)
+	}
+
+	user := buildGameNodeChoicesUser(ch, profile, node, journeyJSON, wlJSON, choiceHistoryJSON)
+	followUp := buildGameNodeChoicesFollowUp(node, regenerate)
+	raw, err := g.callAIForGameChoices(ctx, apiModel, system, characterID, versionID, profile, user, followUp, regenerate)
 	if err != nil {
 		return err
 	}
@@ -612,9 +672,9 @@ func (g *GameService) generateAndSaveNodeChoices(ctx context.Context, characterI
 	}
 	age := resolveNodeAge(profile, node)
 	if err := store.ValidateGameChoicesForAge(age, opts); err != nil {
-		retryUser := user + "\n\n【纠正】上次选项违反年龄/身份约束：" + err.Error() +
-			"。请重新生成 3～5 个选项，每个均须对当前年龄与社会角色可行。"
-		raw, err = g.ai.ChatJSONModel(ctx, apiModel, system, retryUser)
+		retryUser := followUp + "\n\n【纠正】上次选项违反年龄/身份约束：" + err.Error() +
+			"。请重新生成 3～5 个选项，每个均须对当前年龄与社会角色可行，且须与世界线、已历经历一致。"
+		raw, err = g.callAIForGameChoices(ctx, apiModel, system, characterID, versionID, profile, user, retryUser, true)
 		if err != nil {
 			return err
 		}
@@ -627,6 +687,126 @@ func (g *GameService) generateAndSaveNodeChoices(ctx context.Context, characterI
 		}
 	}
 	return g.store.SaveGameNodeChoices(characterID, nodeID, versionID, node.Sequence, &model.GameNodeChoiceRecord{Options: opts})
+}
+
+func (g *GameService) StartRefreshProfileJob(ctx context.Context, characterID string, req model.GameProfileRefreshRequest) (*model.Job, error) {
+	ch, err := g.ensureGameCharacter(characterID)
+	if err != nil {
+		return nil, err
+	}
+	timelineID := strings.TrimSpace(req.TimelineID)
+	if timelineID == "" {
+		timelineID = ch.CurrentTimelineID
+	}
+	if timelineID == "" {
+		return nil, fmt.Errorf("尚无游戏时间轴")
+	}
+	tl, err := g.store.GetTimeline(timelineID)
+	if err != nil {
+		return nil, err
+	}
+	if tl.CurrentVersionID == "" {
+		return nil, fmt.Errorf("时间轴尚无节点")
+	}
+	modelID := ai.NormalizeModelID(req.Model)
+	if _, err := g.char.resolveAPIModel(modelID); err != nil {
+		return nil, err
+	}
+	reqJSON, _ := json.Marshal(model.GameProfileRefreshJobRequest{TimelineID: timelineID})
+	job, err := g.store.CreateJobWithRequest(characterID, "game_profile_refresh", modelID, string(reqJSON))
+	if err != nil {
+		return nil, err
+	}
+	go g.runRefreshProfileFromNodes(context.Background(), job.ID, characterID, timelineID, tl.CurrentVersionID, ch.Mode)
+	return job, nil
+}
+
+func (g *GameService) runRefreshProfileFromNodes(
+	ctx context.Context,
+	jobID, characterID, timelineID, versionID, mode string,
+) {
+	job, _ := g.store.GetJob(jobID)
+	job.Status = model.JobRunning
+	job.Progress = 15
+	job.StageText = "正在根据人生历程整理档案…"
+	_ = g.store.UpdateJob(job)
+
+	profile, err := g.store.GetProfile(characterID)
+	if err != nil {
+		g.char.failJob(job, err.Error())
+		return
+	}
+	ch, err := g.ensureGameCharacter(characterID)
+	if err != nil {
+		g.char.failJob(job, err.Error())
+		return
+	}
+	nodes, err := g.store.GetNodesByVersion(versionID)
+	if err != nil || len(nodes) == 0 {
+		g.char.failJob(job, "当前时间轴无节点")
+		return
+	}
+	last := nodes[len(nodes)-1]
+	apiModel, err := g.char.resolveAPIModel(job.Model)
+	if err != nil {
+		g.char.failJob(job, err.Error())
+		return
+	}
+
+	wlJSON := "{}"
+	if wl, wlErr := g.store.GetWorldLine(timelineID); wlErr == nil && wl != nil {
+		wlJSON = store.MarshalWorldLineForPrompt(wl)
+	}
+	journeyJSON := store.MarshalNodesJourneyForChoices(nodes, last.Sequence)
+	choiceHistoryJSON := "[]"
+	if rows, listErr := g.store.ListGameNodeChoicesByVersion(versionID); listErr == nil {
+		choiceHistoryJSON = marshalGameChoiceHistory(nodes, rows, last.Sequence+1)
+	}
+
+	promptName := "game_refresh_profile_from_nodes_" + gamePromptSuffix(mode)
+	system, err := g.ai.LoadPrompt(promptName)
+	if err != nil {
+		g.char.failJob(job, err.Error())
+		return
+	}
+	user := fmt.Sprintf(
+		"【任务】根据下列材料重写 profile_updates，尤其是 experiences（从出生到 %d 年的经历总述，非流水账）。\n\n【世界线】\n%s\n\n【已历人生节点】\n%s\n\n【既往抉择】\n%s\n\n【当前档案】\n%s\n\n【游戏配置】\n%s",
+		last.Year,
+		wlJSON,
+		journeyJSON,
+		choiceHistoryJSON,
+		store.ProfileJSONTimeline(profile),
+		store.MarshalGameConfigForPrompt(ch.GameConfig),
+	)
+
+	setJobStage(g.store, jobID, 40, "AI 正在归纳人生经历…")
+	raw, err := g.ai.ChatJSONModel(ctx, apiModel, system, user)
+	if err != nil {
+		g.char.failJob(job, err.Error())
+		return
+	}
+	updates, err := store.ParseGameProfileRefresh(raw)
+	if err != nil {
+		g.char.failJob(job, err.Error())
+		return
+	}
+	if err := store.ApplyProfileUpdatesFromJSON(profile, updates); err != nil {
+		g.char.failJob(job, err.Error())
+		return
+	}
+	if err := g.store.SaveProfile(profile); err != nil {
+		g.char.failJob(job, err.Error())
+		return
+	}
+	_ = g.store.SaveGameProfileSnapshot(characterID, timelineID, last.Sequence, profile)
+	g.char.aiCache.invalidate(characterID)
+
+	job.Status = model.JobCompleted
+	job.Progress = 100
+	job.StageText = "档案已更新"
+	profJSON, _ := json.Marshal(profile)
+	job.Result = string(profJSON)
+	_ = g.store.UpdateJob(job)
 }
 
 func (g *GameService) ListChoiceDisplays(versionID string, nodes []model.LifeNode) ([]model.GameNodeChoiceDisplay, error) {
@@ -721,7 +901,7 @@ func (g *GameService) GetNodeChoices(ctx context.Context, characterID, nodeID, m
 	}
 
 	if regenerate {
-		if err := g.generateAndSaveNodeChoices(ctx, characterID, nodeID, node.VersionID, modelID); err != nil {
+		if err := g.generateAndSaveNodeChoices(ctx, characterID, nodeID, node.VersionID, modelID, true); err != nil {
 			return nil, err
 		}
 	} else if _, _, err := g.store.GetGameNodeChoices(nodeID, node.VersionID); err != nil {
@@ -951,6 +1131,11 @@ func (g *GameService) runGameChoose(ctx context.Context, jobID, characterID stri
 	job.StageText = "完成"
 	job.Result = string(result)
 	_ = g.store.UpdateJob(job)
+
+	g.appendGameSessionAfterChoice(
+		characterID, newVersionID, profile, choiceLabel,
+		nextSeq, payload.NextNode.Title, payload.NextNode.Events,
+	)
 
 	go g.prefetchNodeChoices(context.Background(), characterID, nextNode.ID, newVersionID, job.Model)
 }

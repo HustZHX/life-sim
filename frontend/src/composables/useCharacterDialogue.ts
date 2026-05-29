@@ -3,7 +3,6 @@ import { ElMessage } from 'element-plus'
 import {
   api,
   DIALOGUE_IDENTITY_READER,
-  type AIModelId,
   type CharacterMemory,
   type DialogueIdentityOption,
   type DialogueMessage,
@@ -12,9 +11,10 @@ import {
   type LifeNode,
   type PersonalityImpact,
 } from '@/api/client'
-import { DEFAULT_AI_MODEL } from '@/constants/models'
+import { useModelStore } from '@/stores/model'
 
 export function useCharacterDialogue() {
+  const modelStore = useModelStore()
   const visible = ref(false)
   const step = ref<'identity' | 'chat' | 'history'>('identity')
   const loading = ref(false)
@@ -29,7 +29,6 @@ export function useCharacterDialogue() {
   const node = ref<LifeNode | null>(null)
   const isActiveBranch = ref(true)
 
-  const model = ref<AIModelId>(DEFAULT_AI_MODEL)
   const identityOptions = ref<DialogueIdentityOption[]>([])
   const selectedIdentity = ref('')
   const customIdentity = ref('')
@@ -87,7 +86,7 @@ export function useCharacterDialogue() {
         return
       }
     }
-    const res = await api.generateDialogueIdentityOptions(charId, nodeId, model.value, forceGenerate)
+    const res = await api.generateDialogueIdentityOptions(charId, nodeId, modelStore.aiModel, forceGenerate)
     identityOptions.value = res.options ?? []
     identitySaved.value = identityOptions.value.length > 0
     if (identityOptions.value.length > 0 && !selectedIdentity.value) {
@@ -136,7 +135,7 @@ export function useCharacterDialogue() {
       isActiveBranch.value = sess.version_id === activeVersionId.value
       sessionId.value = sess.id
       messages.value = sess.messages ?? []
-      if (sess.model) model.value = sess.model
+      if (sess.model) modelStore.setModel(sess.model)
 
       await loadIdentityOptions(characterId.value, n.id, false)
       applySessionIdentity(sess)
@@ -271,7 +270,7 @@ export function useCharacterDialogue() {
     try {
       const sess = await api.createDialogueSession(characterId.value, node.value.id, {
         identity,
-        model: model.value,
+        model: modelStore.aiModel,
         resume: true,
       })
       sessionId.value = sess.id
@@ -306,7 +305,7 @@ export function useCharacterDialogue() {
         characterId.value,
         sessionId.value,
         text,
-        model.value
+        modelStore.aiModel
       )
       const idx = messages.value.findIndex((m) => m.id === tempId)
       if (idx >= 0) {
@@ -340,7 +339,7 @@ export function useCharacterDialogue() {
         const summarized = await api.summarizeMemory(characterId.value, {
           text: msg.content,
           identity: speakerIdentity,
-          model: model.value,
+          model: modelStore.aiModel,
         })
         if (summarized.content.trim()) content = summarized.content
       } catch {
@@ -436,7 +435,6 @@ export function useCharacterDialogue() {
     versionId,
     node,
     isActiveBranch,
-    model,
     identityOptions,
     selectedIdentity,
     customIdentity,

@@ -3,8 +3,7 @@ import { ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { RefreshRight } from '@element-plus/icons-vue'
 import { api, type Profile } from '@/api/client'
-import type { AIModelId } from '@/constants/models'
-import { DEFAULT_AI_MODEL } from '@/constants/models'
+import { useModelStore } from '@/stores/model'
 import { PROFILE_FIELDS, cloneProfile, type ProfileFieldKey } from '@/constants/profileFields'
 import { formatProfileLifeSpan, isLivingProfile } from '@/utils/timelineDensity'
 
@@ -12,11 +11,12 @@ const props = withDefaults(
   defineProps<{
     profile: Profile
     characterId: string
-    model?: AIModelId
     editable?: boolean
   }>(),
-  { editable: true, model: DEFAULT_AI_MODEL }
+  { editable: true }
 )
+
+const modelStore = useModelStore()
 
 const emit = defineEmits<{
   'update:profile': [profile: Profile]
@@ -92,7 +92,7 @@ async function randomizeField(key: ProfileFieldKey) {
   if (!props.editable) return
   randomizingField.value = key
   try {
-    const updated = await api.randomizeProfileField(props.characterId, key, props.model)
+    const updated = await api.randomizeProfileField(props.characterId, key, modelStore.aiModel)
     local.value = cloneProfile(updated)
     emit('update:profile', updated)
     ElMessage.success('已重新随机')

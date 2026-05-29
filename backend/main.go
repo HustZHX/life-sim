@@ -116,6 +116,7 @@ func main() {
 			protected.PATCH("/characters/:id/game/config", gameHandler.UpdateConfig)
 			protected.POST("/characters/:id/game/era-options", gameHandler.EraOptions)
 			protected.POST("/characters/:id/game/profile/generate", gameHandler.GenerateProfile)
+			protected.POST("/characters/:id/game/profile/refresh", gameHandler.RefreshProfile)
 			protected.POST("/characters/:id/game/timeline/start", gameHandler.StartTimeline)
 			protected.GET("/characters/:id/nodes/:nodeId/game/choices", gameHandler.GetChoices)
 			protected.POST("/characters/:id/nodes/:nodeId/game/choices", gameHandler.PostChoices)

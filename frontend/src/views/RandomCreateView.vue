@@ -4,11 +4,10 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api, type Profile, type TimelineConfig } from '@/api/client'
 import { DEFAULT_TARGET_NODE_COUNT, effectiveDeathYear, isLivingProfile } from '@/utils/timelineDensity'
-import { DEFAULT_AI_MODEL, type AIModelId } from '@/constants/models'
 import { useTimelineGenerate } from '@/composables/useTimelineGenerate'
+import { useModelStore } from '@/stores/model'
 import { DEFAULT_RANDOM_NAME } from '@/utils/randomNames'
 import ProfileEditor from '@/components/ProfileEditor.vue'
-import ModelSelector from '@/components/ModelSelector.vue'
 import TimelineConfigPanel from '@/components/TimelineConfigPanel.vue'
 import JobProgress from '@/components/JobProgress.vue'
 
@@ -23,8 +22,7 @@ const displayName = ref('')
 const nameCandidates = ref<string[]>([])
 const background = ref('')
 const introduction = ref('')
-const profileModel = ref<AIModelId>(DEFAULT_AI_MODEL)
-const timelineModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+const modelStore = useModelStore()
 const timelineConfig = ref<TimelineConfig>({ target_node_count: DEFAULT_TARGET_NODE_COUNT, start_year: 0, end_year: 0 })
 
 const { jobRunning, progress, statusText, failed, errorText, retrying, retry, clearJobState, confirmAndGenerate } = useTimelineGenerate()
@@ -34,7 +32,7 @@ async function suggestNames() {
   nameCandidates.value = []
   try {
     const res = await api.suggestNames({
-      model: profileModel.value,
+      model: modelStore.aiModel,
       background: background.value.trim(),
       introduction: introduction.value.trim(),
     })
@@ -61,7 +59,7 @@ async function generateProfile() {
     characterId.value = ch.id
     const name = displayName.value.trim() || DEFAULT_RANDOM_NAME
     profile.value = await api.generateProfile(ch.id, {
-      model: profileModel.value,
+      model: modelStore.aiModel,
       display_name: name,
       background: background.value.trim(),
       introduction: introduction.value.trim(),
@@ -91,7 +89,7 @@ function onProfileUpdate(p: Profile) {
 
 async function onGenerateClick() {
   if (!characterId.value || !profile.value) return
-  const result = await confirmAndGenerate(characterId.value, timelineModel.value, {
+  const result = await confirmAndGenerate(characterId.value, modelStore.aiModel, {
     displayName: profile.value.display_name,
     config: timelineConfig.value,
     profile: profile.value,
@@ -174,7 +172,6 @@ async function onGenerateClick() {
         </el-form-item>
       </el-form>
 
-      <ModelSelector v-model="profileModel" />
       <el-button type="primary" size="large" :loading="loading" style="margin-top: 16px" @click="generateProfile">
         生成人物档案
       </el-button>
@@ -187,7 +184,6 @@ async function onGenerateClick() {
       <ProfileEditor
         :profile="profile"
         :character-id="characterId"
-        :model="profileModel"
         @update:profile="onProfileUpdate"
       />
 
@@ -202,11 +198,9 @@ async function onGenerateClick() {
         show-icon
         style="margin-bottom: 12px"
       />
-      <ModelSelector v-model="timelineModel" />
       <TimelineConfigPanel
         v-model="timelineConfig"
         :profile="profile"
-        :model="timelineModel"
         :disabled="jobRunning"
       />
       <el-button type="primary" size="large" :disabled="jobRunning" style="margin-top: 8px" @click="onGenerateClick">

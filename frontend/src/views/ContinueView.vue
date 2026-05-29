@@ -6,7 +6,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { ElMessage } from 'element-plus'
 
-import { api, type AIModelId, type Profile, type TimelineConfig } from '@/api/client'
+import { api, type Profile, type TimelineConfig } from '@/api/client'
 
 import {
 
@@ -18,13 +18,12 @@ import {
 
 } from '@/utils/timelineDensity'
 
-import { DEFAULT_AI_MODEL } from '@/constants/models'
+import { useModelStore } from '@/stores/model'
 
 import { useTimelineGenerate } from '@/composables/useTimelineGenerate'
 
 import ProfileEditor from '@/components/ProfileEditor.vue'
 
-import ModelSelector from '@/components/ModelSelector.vue'
 
 import TimelineConfigPanel from '@/components/TimelineConfigPanel.vue'
 
@@ -46,8 +45,7 @@ const displayName = ref('')
 
 const pageLoading = ref(false)
 
-const aiModel = ref<AIModelId>(DEFAULT_AI_MODEL)
-const profileModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+const modelStore = useModelStore()
 
 const timelineTitle = ref('')
 
@@ -110,7 +108,7 @@ function onProfileUpdate(p: Profile) {
 }
 
 async function onGenerateClick() {
-  const result = await confirmAndGenerate(charId, aiModel.value, {
+  const result = await confirmAndGenerate(charId, modelStore.aiModel, {
     displayName: displayName.value,
     config: {
       ...timelineConfig.value,
@@ -193,12 +191,10 @@ onMounted(load)
     />
 
     <p v-if="profile" class="profile-edit-hint">档案字段可编辑；随机单字段时使用下方档案 AI 模型。</p>
-    <ModelSelector v-if="profile" v-model="profileModel" label="档案 AI 模型" />
     <ProfileEditor
       v-if="profile"
       :profile="profile"
       :character-id="charId"
-      :model="profileModel"
       @update:profile="onProfileUpdate"
     />
 
@@ -224,7 +220,6 @@ onMounted(load)
 
     </el-form>
 
-    <ModelSelector v-if="profile" v-model="aiModel" label="时间轴 AI 模型" />
 
     <TimelineConfigPanel
 
@@ -234,7 +229,6 @@ onMounted(load)
 
       :profile="profile"
 
-      :model="aiModel"
 
       :disabled="jobRunning"
 

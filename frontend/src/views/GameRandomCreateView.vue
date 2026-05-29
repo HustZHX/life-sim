@@ -3,11 +3,10 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api, type Profile } from '@/api/client'
-import { DEFAULT_AI_MODEL, type AIModelId } from '@/constants/models'
 import { useAwaitProgress } from '@/composables/useAwaitProgress'
 import { useGameCreate } from '@/composables/useGameCreate'
+import { useModelStore } from '@/stores/model'
 import ProfilePanel from '@/components/ProfilePanel.vue'
-import ModelSelector from '@/components/ModelSelector.vue'
 import JobProgress from '@/components/JobProgress.vue'
 
 const router = useRouter()
@@ -17,8 +16,7 @@ const displayName = ref('')
 const birthBackground = ref('')
 const profile = ref<Profile | null>(null)
 const loading = ref(false)
-const profileModel = ref<AIModelId>(DEFAULT_AI_MODEL)
-const startModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+const modelStore = useModelStore()
 
 const profileJob = useAwaitProgress('生成出生设定')
 const { jobRunner, starting, startGameTimeline } = useGameCreate()
@@ -36,7 +34,7 @@ async function start() {
     const p = await profileJob.run(
       () =>
         api.gameGenerateProfile(ch.id, {
-          model: profileModel.value,
+          model: modelStore.aiModel,
           display_name: displayName.value.trim() || undefined,
           birth_background: birthBackground.value.trim(),
         }),
@@ -52,7 +50,7 @@ async function start() {
 }
 
 async function onStartGame() {
-  const result = await startGameTimeline(characterId.value, startModel.value)
+  const result = await startGameTimeline(characterId.value, modelStore.aiModel)
   if (result.ok) {
     router.push(`/game/timeline/${characterId.value}`)
   }
@@ -88,7 +86,6 @@ async function onStartGame() {
         placeholder="时代、地区、家庭阶级与父母情况等，例如：1990 年代江南小城，父亲工人母亲教师…"
         :disabled="loading"
       />
-      <ModelSelector v-model="profileModel" style="margin-top: 16px" />
       <el-button type="primary" size="large" :loading="loading" style="margin-top: 16px" @click="start">
         生成出生设定
       </el-button>
@@ -97,7 +94,6 @@ async function onStartGame() {
     <div v-if="step === 2 && profile">
       <h2 class="step-title">出生设定预览</h2>
       <ProfilePanel :profile="profile" />
-      <ModelSelector v-model="startModel" style="margin-top: 16px" />
       <el-button type="primary" size="large" :loading="starting" style="margin-top: 16px" @click="onStartGame">
         开始人生游戏
       </el-button>

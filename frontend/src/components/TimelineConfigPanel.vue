@@ -3,8 +3,8 @@ import { computed, ref, watch } from 'vue'
 import { ArrowDown, ArrowUp } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { api, type Profile, type TimelineConfig, type TimelineRecommendation } from '@/api/client'
-import type { AIModelId } from '@/constants/models'
-import { DEFAULT_AI_MODEL, DEFAULT_NARRATIVE_DENSITY } from '@/constants/models'
+import { DEFAULT_NARRATIVE_DENSITY } from '@/constants/models'
+import { useModelStore } from '@/stores/model'
 import {
   DEFAULT_TARGET_NODE_COUNT,
   MAX_TARGET_NODE_COUNT,
@@ -17,9 +17,10 @@ import {
   isLivingProfile,
 } from '@/utils/timelineDensity'
 
+const modelStore = useModelStore()
+
 const props = defineProps<{
   profile: Profile
-  model?: AIModelId
   disabled?: boolean
   /** 仅展示节点规模（用于重算后续） */
   densityOnly?: boolean
@@ -109,7 +110,7 @@ async function fetchRecommendations() {
   loadingRecs.value = true
   selectedRecIndex.value = null
   try {
-    const res = await api.recommendTimeline(props.profile.character_id, props.model || DEFAULT_AI_MODEL)
+    const res = await api.recommendTimeline(props.profile.character_id, modelStore.aiModel)
     recommendations.value = res.recommendations
   } catch (e: unknown) {
     recommendations.value = []

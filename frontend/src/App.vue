@@ -4,6 +4,7 @@ import { RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useLayoutStore } from '@/stores/layout'
 import LayoutModeToggle from '@/components/LayoutModeToggle.vue'
+import GlobalModelSwitcher from '@/components/GlobalModelSwitcher.vue'
 import AppBottomNav from '@/components/mobile/AppBottomNav.vue'
 
 const route = useRoute()
@@ -28,6 +29,7 @@ async function logout() {
         <router-link to="/characters">人物列表</router-link>
       </nav>
       <div class="header-right">
+        <GlobalModelSwitcher />
         <LayoutModeToggle />
         <span v-if="auth.user" class="user-label">{{ auth.user.display_name || auth.user.username }}</span>
         <el-button v-if="auth.enabled && auth.user" size="small" text @click="logout">退出登录</el-button>

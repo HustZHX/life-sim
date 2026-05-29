@@ -4,12 +4,11 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api, type Profile, type TimelineConfig } from '@/api/client'
 import { DEFAULT_TARGET_NODE_COUNT, effectiveDeathYear } from '@/utils/timelineDensity'
-import { DEFAULT_AI_MODEL, type AIModelId } from '@/constants/models'
+import { useModelStore } from '@/stores/model'
 import { useTimelineGenerate } from '@/composables/useTimelineGenerate'
 import { useAwaitProgress } from '@/composables/useAwaitProgress'
 import CandidateCards from '@/components/CandidateCards.vue'
 import ProfileEditor from '@/components/ProfileEditor.vue'
-import ModelSelector from '@/components/ModelSelector.vue'
 import TimelineConfigPanel from '@/components/TimelineConfigPanel.vue'
 import JobProgress from '@/components/JobProgress.vue'
 
@@ -20,8 +19,7 @@ const characterId = ref('')
 const candidates = ref<import('@/api/client').ResolveCandidate[]>([])
 const profile = ref<Profile | null>(null)
 const loading = ref(false)
-const aiModel = ref<AIModelId>(DEFAULT_AI_MODEL)
-const profileModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+const modelStore = useModelStore()
 const timelineConfig = ref<TimelineConfig>({ target_node_count: DEFAULT_TARGET_NODE_COUNT, start_year: 0, end_year: 0 })
 
 const { jobRunning, progress, statusText, failed, errorText, retrying, retry, clearJobState, confirmAndGenerate } = useTimelineGenerate()
@@ -87,7 +85,7 @@ async function onSelect(index: number) {
   loading.value = true
   try {
     const p = await profileJob.run(
-      () => api.generateProfile(characterId.value, { model: profileModel.value }),
+      () => api.generateProfile(characterId.value, { model: modelStore.aiModel }),
       {
         title: '搜寻人物资料',
         startText: '正在确认人物身份…',
@@ -116,7 +114,7 @@ function onProfileUpdate(p: Profile) {
 
 async function onGenerateClick() {
   try {
-    const result = await confirmAndGenerate(characterId.value, aiModel.value, {
+    const result = await confirmAndGenerate(characterId.value, modelStore.aiModel, {
       displayName: profile.value?.display_name,
       config: timelineConfig.value,
       background: true,
@@ -159,7 +157,6 @@ async function onGenerateClick() {
         :disabled="loading"
         @keyup.enter="start"
       />
-      <ModelSelector v-model="profileModel" style="margin-top: 16px" />
       <el-button type="primary" size="large" :loading="loading" style="margin-top: 16px" @click="start">
         AI 查找候选人
       </el-button>
@@ -175,14 +172,11 @@ async function onGenerateClick() {
       <ProfileEditor
         :profile="profile"
         :character-id="characterId"
-        :model="profileModel"
         @update:profile="onProfileUpdate"
       />
-      <ModelSelector v-model="aiModel" />
       <TimelineConfigPanel
         v-model="timelineConfig"
         :profile="profile"
-        :model="aiModel"
         :disabled="jobRunning"
       />
       <el-button

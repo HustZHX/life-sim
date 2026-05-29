@@ -6,6 +6,7 @@ import (
 )
 
 const sessionMaxMessages = 4
+const gameSessionMaxMessages = 12
 const sessionTTL = 30 * time.Minute
 
 // Session 轻量多轮上下文，用于推荐→生成等短链路。
@@ -15,6 +16,7 @@ type Session struct {
 	SystemPrompt string
 	Messages     []chatMessage
 	CreatedAt    time.Time
+	MaxMessages  int // 0 表示使用 sessionMaxMessages
 }
 
 func NewSession(characterID, profileHash, systemPrompt, userContent, assistantContent string) *Session {
@@ -28,6 +30,20 @@ func NewSession(characterID, profileHash, systemPrompt, userContent, assistantCo
 		},
 		CreatedAt: time.Now(),
 	}
+}
+
+// NewGameSession 人生游戏专用，保留更多轮次以衔接各节点抉择生成。
+func NewGameSession(characterID, profileHash, systemPrompt, userContent, assistantContent string) *Session {
+	s := NewSession(characterID, profileHash, systemPrompt, userContent, assistantContent)
+	s.MaxMessages = gameSessionMaxMessages
+	return s
+}
+
+func (s *Session) messageCap() int {
+	if s != nil && s.MaxMessages > 0 {
+		return s.MaxMessages
+	}
+	return sessionMaxMessages
 }
 
 func (s *Session) Valid(profileHash string) bool {
@@ -45,8 +61,9 @@ func (s *Session) AppendTurn(userContent, assistantContent string) {
 		chatMessage{Role: "user", Content: userContent},
 		chatMessage{Role: "assistant", Content: assistantContent},
 	)
-	if len(s.Messages) > sessionMaxMessages {
-		s.Messages = s.Messages[len(s.Messages)-sessionMaxMessages:]
+	cap := s.messageCap()
+	if len(s.Messages) > cap {
+		s.Messages = s.Messages[len(s.Messages)-cap:]
 	}
 }
 

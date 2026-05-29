@@ -651,6 +651,11 @@ export const api = {
   gameStartTimeline: (id: string, body?: { model?: AIModelId; title?: string }) =>
     unwrap<Job>(http.post(`/api/v1/characters/${id}/game/timeline/start`, body ?? {})),
 
+  gameRefreshProfile: (
+    id: string,
+    body?: { model?: AIModelId; timeline_id?: string }
+  ) => unwrap<Job>(http.post(`/api/v1/characters/${id}/game/profile/refresh`, body ?? {})),
+
   gameGetChoices: (charId: string, nodeId: string, model?: AIModelId, regenerate = false) =>
     unwrap<GameChoicesResponse>(
       http.get(`/api/v1/characters/${charId}/nodes/${nodeId}/game/choices`, {

@@ -13,18 +13,18 @@ import {
   type WorldLine,
 } from '@/api/client'
 import { useLayoutStore } from '@/stores/layout'
-import { DEFAULT_AI_MODEL, DEFAULT_CASCADE_MODEL } from '@/constants/models'
+import { useModelStore } from '@/stores/model'
 import { useChronicleJobs, type ChronicleJobEntry } from '@/composables/useChronicleJobs'
 import NarrativeDialog from '@/components/NarrativeDialog.vue'
 import LightNovelJobList from '@/components/LightNovelJobList.vue'
-import ModelSelector from '@/components/ModelSelector.vue'
 import TimelineAxis from '@/components/TimelineAxis.vue'
 import WorldLinePanel from '@/components/WorldLinePanel.vue'
 import ProfilePanel from '@/components/ProfilePanel.vue'
 import GameChoicePanel from '@/components/GameChoicePanel.vue'
-import HighlightedText from '@/components/HighlightedText.vue'
-import NodeSceneMeta from '@/components/NodeSceneMeta.vue'
-import { entityContextFromNode } from '@/utils/textEntities'
+import NodeEditor from '@/components/NodeEditor.vue'
+import CharacterDialogueDialog from '@/components/CharacterDialogueDialog.vue'
+import JobProgress from '@/components/JobProgress.vue'
+import { useJobRunner } from '@/composables/useJobRunner'
 
 const route = useRoute()
 const router = useRouter()
@@ -46,6 +46,8 @@ const choicePanelOpen = ref(false)
 const choiceSimulating = ref(false)
 const jobBusy = ref(false)
 const worldLineRefreshing = ref(false)
+const dialogueRef = ref<InstanceType<typeof CharacterDialogueDialog> | null>(null)
+const profileJobRunner = useJobRunner('刷新档案')
 
 const currentVersionId = computed(() => nodes.value[0]?.version_id ?? '')
 
@@ -62,7 +64,7 @@ const {
 
 const chroniclePickerVisible = ref(false)
 const chronicleSubmitting = ref(false)
-const chronicleModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+const modelStore = useModelStore()
 const chronicleFrom = ref(0)
 const chronicleTo = ref(0)
 const chronicleVisible = ref(false)
@@ -117,10 +119,6 @@ const worldLineIntroSnippet = computed(() => {
   if (!text) return ''
   return text.length > 32 ? `${text.slice(0, 32)}…` : text
 })
-
-function nodeContext(node: LifeNode) {
-  return entityContextFromNode(node, profile.value ?? null)
-}
 
 async function scrollToSelectedNode() {
   await nextTick()
@@ -278,6 +276,54 @@ async function onRollbackToNode(node: LifeNode) {
   }
 }
 
+function onOpenDialogue() {
+  if (!selectedNode.value) return
+  dialogueRef.value?.open(
+    charId,
+    selectedNode.value,
+    selectedNode.value.version_id,
+    currentVersionId.value
+  )
+}
+
+function onDialogueNodeUpdated(payload: { versionId: string; node: LifeNode }) {
+  const idx = nodes.value.findIndex((n) => n.sequence === payload.node.sequence)
+  if (idx >= 0) {
+    nodes.value[idx] = payload.node
+    selectedNode.value = payload.node
+  }
+}
+
+async function refreshProfileFromNodes() {
+  if (!currentTimeline.value?.id || !nodes.value.length) {
+    ElMessage.warning('请先有人生节点')
+    return
+  }
+  jobBusy.value = true
+  const ok = await profileJobRunner.run({
+    title: '刷新档案经历',
+    submitLabel: '正在归纳人生经历…',
+    submit: () =>
+      api.gameRefreshProfile(charId, {
+        model: modelStore.aiModel,
+        timeline_id: currentTimeline.value!.id,
+      }),
+    resubmit: () =>
+      api.gameRefreshProfile(charId, {
+        model: modelStore.aiModel,
+        timeline_id: currentTimeline.value!.id,
+      }),
+    afterSuccess: async () => {
+      profile.value = await api.getProfile(charId)
+      ElMessage.success('档案经历已更新为人生总述')
+    },
+  })
+  jobBusy.value = false
+  if (!ok && !profileJobRunner.failed.value) {
+    ElMessage.error('刷新档案失败')
+  }
+}
+
 async function refreshWorldLine() {
   if (!currentTimeline.value?.id || !nodes.value.length) {
     ElMessage.warning('当前时间轴尚无节点')
@@ -285,7 +331,7 @@ async function refreshWorldLine() {
   }
   worldLineRefreshing.value = true
   try {
-    await api.refreshWorldLine(charId, currentTimeline.value.id, { model: DEFAULT_CASCADE_MODEL })
+    await api.refreshWorldLine(charId, currentTimeline.value.id, { model: modelStore.aiModel })
     await load()
     ElMessage.success('世界线已更新')
   } catch (e: unknown) {
@@ -322,7 +368,7 @@ async function confirmChronicle() {
       versionId: currentVersionId.value,
       fromSequence: chronicleFrom.value,
       toSequence: chronicleTo.value,
-      model: chronicleModel.value,
+      model: modelStore.aiModel,
       onCached: (artifact) => {
         chroniclePickerVisible.value = false
         chronicleTitle.value = `史书 · 节点 ${chronicleFrom.value}–${chronicleTo.value}`
@@ -426,6 +472,19 @@ onMounted(async () => {
 
     <el-collapse-transition>
       <div v-if="showProfile && profile" class="page-card profile-block">
+        <div class="profile-section-head">
+          <span class="profile-section-head__title">人物档案</span>
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            :loading="profileJobRunner.visible.value"
+            :disabled="!nodes.length || pageLoading || jobBusy"
+            @click="refreshProfileFromNodes"
+          >
+            刷新经历摘要
+          </el-button>
+        </div>
         <ProfilePanel :profile="profile" />
       </div>
     </el-collapse-transition>
@@ -508,28 +567,13 @@ onMounted(async () => {
                 title="人生抉择仅在时间轴最后一个节点进行"
                 description="请选中末节点，或点击时间轴下方的「人生抉择」按钮。"
               />
-              <article class="game-node-detail">
-                <h3 class="game-node-detail__title">
-                  {{ selectedNode.year }} 年 · {{ selectedNode.title }}
-                </h3>
-                <NodeSceneMeta :scene="selectedNode.scene" />
-                <div class="read-block">
-                  <div class="read-label">经历</div>
-                  <p class="read-text">
-                    <HighlightedText :text="selectedNode.events" :context="nodeContext(selectedNode)" tag="span" />
-                  </p>
-                </div>
-                <div v-if="selectedNode.thoughts" class="read-block muted">
-                  <div class="read-label">内心</div>
-                  <p class="read-text">
-                    <HighlightedText
-                      :text="selectedNode.thoughts"
-                      :context="nodeContext(selectedNode)"
-                      tag="span"
-                    />
-                  </p>
-                </div>
-              </article>
+              <NodeEditor
+                :character-id="charId"
+                :node="selectedNode"
+                :profile="profile"
+                read-only
+                @dialogue="onOpenDialogue"
+              />
               <GameChoicePanel
                 v-if="lastNode"
                 :char-id="charId"
@@ -566,7 +610,19 @@ onMounted(async () => {
         <el-tab-pane label="侧栏" name="sidebar">
           <div class="page-card sidebar-stack">
             <section v-if="profile" class="sidebar-section">
-              <h4 class="sidebar-section__title">人物档案</h4>
+              <div class="profile-section-head">
+                <h4 class="sidebar-section__title">人物档案</h4>
+                <el-button
+                  size="small"
+                  type="primary"
+                  plain
+                  :loading="profileJobRunner.visible.value"
+                  :disabled="!nodes.length || pageLoading || jobBusy"
+                  @click="refreshProfileFromNodes"
+                >
+                  刷新经历摘要
+                </el-button>
+              </div>
               <ProfilePanel :profile="profile" />
             </section>
             <WorldLinePanel
@@ -662,28 +718,13 @@ onMounted(async () => {
                 title="人生抉择仅在时间轴最后一个节点进行"
                 description="请选中末节点，或点击时间轴下方的「人生抉择」按钮。"
               />
-              <article class="game-node-detail">
-                <h3 class="game-node-detail__title">
-                  {{ selectedNode.year }} 年 · {{ selectedNode.title }}
-                </h3>
-                <NodeSceneMeta :scene="selectedNode.scene" />
-                <div class="read-block">
-                  <div class="read-label">经历</div>
-                  <p class="read-text">
-                    <HighlightedText :text="selectedNode.events" :context="nodeContext(selectedNode)" tag="span" />
-                  </p>
-                </div>
-                <div v-if="selectedNode.thoughts" class="read-block muted">
-                  <div class="read-label">内心</div>
-                  <p class="read-text">
-                    <HighlightedText
-                      :text="selectedNode.thoughts"
-                      :context="nodeContext(selectedNode)"
-                      tag="span"
-                    />
-                  </p>
-                </div>
-              </article>
+              <NodeEditor
+                :character-id="charId"
+                :node="selectedNode"
+                :profile="profile"
+                read-only
+                @dialogue="onOpenDialogue"
+              />
               <GameChoicePanel
                 v-if="lastNode"
                 :char-id="charId"
@@ -701,7 +742,19 @@ onMounted(async () => {
       <aside class="col-dock col-dock-side">
         <div class="dock-panel page-card sidebar-stack">
           <section v-if="profile" class="sidebar-section">
-            <h4 class="sidebar-section__title">人物档案</h4>
+            <div class="profile-section-head">
+              <h4 class="sidebar-section__title">人物档案</h4>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                :loading="profileJobRunner.visible.value"
+                :disabled="!nodes.length || pageLoading || jobBusy"
+                @click="refreshProfileFromNodes"
+              >
+                刷新经历摘要
+              </el-button>
+            </div>
             <ProfilePanel :profile="profile" />
           </section>
           <WorldLinePanel
@@ -741,7 +794,6 @@ onMounted(async () => {
             />
           </el-select>
         </el-form-item>
-        <ModelSelector v-model="chronicleModel" />
       </el-form>
       <template #footer>
         <el-button @click="chroniclePickerVisible = false">取消</el-button>
@@ -776,6 +828,24 @@ onMounted(async () => {
         }
       "
       @regenerate="regenerateChronicle"
+    />
+
+    <JobProgress
+      :visible="profileJobRunner.visible.value"
+      :progress="profileJobRunner.progress.value"
+      :status-text="profileJobRunner.statusText.value"
+      :title="profileJobRunner.title.value"
+      :failed="profileJobRunner.failed.value"
+      :error-text="profileJobRunner.errorText.value"
+      :retrying="profileJobRunner.retrying.value"
+      @retry="profileJobRunner.retry()"
+      @dismiss="profileJobRunner.clearState()"
+    />
+
+    <CharacterDialogueDialog
+      ref="dialogueRef"
+      :all-nodes="nodes"
+      @node-updated="onDialogueNodeUpdated"
     />
   </div>
 </template>
@@ -872,6 +942,21 @@ onMounted(async () => {
 
 .profile-block {
   margin-bottom: 16px;
+}
+
+.profile-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.profile-section-head__title,
+.profile-section-head .sidebar-section__title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 
 .mobile-detail-card {

@@ -6,7 +6,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, type SavedChronicleMeta, type SavedLightNovelMeta } from '@/api/client'
 import type { AIModelId, BranchNode, LifeNode, Timeline, WorldLine } from '@/api/client'
 import { useLayoutStore } from '@/stores/layout'
-import { DEFAULT_AI_MODEL, DEFAULT_CASCADE_MODEL, modelDisplayLabel } from '@/constants/models'
+import { DEFAULT_AI_MODEL, modelDisplayLabel } from '@/constants/models'
+import { useModelStore } from '@/stores/model'
 import TimelineAxis from '@/components/TimelineAxis.vue'
 import NodeEditor from '@/components/NodeEditor.vue'
 import BranchFlowchart from '@/components/BranchFlowchart.vue'
@@ -14,7 +15,6 @@ import ProfilePanel from '@/components/ProfilePanel.vue'
 import NarrativeDialog from '@/components/NarrativeDialog.vue'
 import CharacterDialogueDialog from '@/components/CharacterDialogueDialog.vue'
 import LightNovelJobList, { type NarrativeRangeJobEntry } from '@/components/LightNovelJobList.vue'
-import ModelSelector from '@/components/ModelSelector.vue'
 import JobProgress from '@/components/JobProgress.vue'
 import type { Profile } from '@/api/client'
 import { copyTextToClipboard, formatTimelineExport } from '@/utils/exportTimelineText'
@@ -158,9 +158,10 @@ const {
   retryJob: retryLightNovelJob,
 } = lightNovelJobs
 
+const modelStore = useModelStore()
+
 const lightNovelPickerVisible = ref(false)
 const lightNovelSubmitting = ref(false)
-const lightNovelModel = ref<AIModelId>(DEFAULT_AI_MODEL)
 const lightNovelPerson = ref<LightNovelPerson>('first')
 const lightNovelFrom = ref(0)
 const lightNovelTo = ref(0)
@@ -189,7 +190,6 @@ const {
 
 const chroniclePickerVisible = ref(false)
 const chronicleSubmitting = ref(false)
-const chronicleModel = ref<AIModelId>(DEFAULT_AI_MODEL)
 const chronicleFrom = ref(0)
 const chronicleTo = ref(0)
 const chronicleViewContext = ref<{
@@ -205,12 +205,10 @@ const savedChroniclesBranch = ref('')
 
 const narrativeChangeVisible = ref(false)
 const narrativeChangeInstruction = ref('')
-const narrativeChangeModel = ref<AIModelId>(DEFAULT_AI_MODEL)
 const narrativeChangeTargetNodes = ref(DEFAULT_TARGET_NODE_COUNT)
 
 const appendNextVisible = ref(false)
 const appendNextTitle = ref('')
-const appendNextModel = ref<AIModelId>(DEFAULT_AI_MODEL)
 
 const profileLiving = computed(() => !!profile.value && isLivingProfile(profile.value))
 
@@ -289,7 +287,7 @@ async function confirmLightNovel() {
       fromSequence: lightNovelFrom.value,
       toSequence: lightNovelTo.value,
       person: lightNovelPerson.value,
-      model: lightNovelModel.value,
+      model: modelStore.aiModel,
       onCached: (artifact) => {
         lightNovelPickerVisible.value = false
         openLightNovelContent(
@@ -303,7 +301,7 @@ async function confirmLightNovel() {
           fromSequence: lightNovelFrom.value,
           toSequence: lightNovelTo.value,
           person: lightNovelPerson.value,
-          model: lightNovelModel.value,
+          model: modelStore.aiModel,
         }
       },
     })
@@ -434,7 +432,7 @@ async function confirmChronicle() {
       versionId: currentVersionId.value,
       fromSequence: chronicleFrom.value,
       toSequence: chronicleTo.value,
-      model: chronicleModel.value,
+      model: modelStore.aiModel,
       onCached: (artifact) => {
         chroniclePickerVisible.value = false
         openChronicleContent(artifact.content, chronicleFrom.value, chronicleTo.value)
@@ -442,7 +440,7 @@ async function confirmChronicle() {
           versionId: currentVersionId.value,
           fromSequence: chronicleFrom.value,
           toSequence: chronicleTo.value,
-          model: chronicleModel.value,
+          model: modelStore.aiModel,
         }
       },
     })
@@ -563,7 +561,7 @@ async function confirmNarrativeChange() {
   const body = {
     timeline_id: selectedTimelineId.value,
     instruction,
-    model: narrativeChangeModel.value,
+    model: modelStore.aiModel,
     target_node_count: narrativeChangeTargetNodes.value,
   }
   const ok = await jobRunner.run({
@@ -574,7 +572,7 @@ async function confirmNarrativeChange() {
     onProgress: (j) => {
       if (j.status === 'running') {
         const stage = j.stage_text ? `${j.stage_text} · ` : '处理中… '
-        jobRunner.statusText.value = `${stage}${j.progress}%（${modelDisplayLabel(j.model || narrativeChangeModel.value)}）`
+        jobRunner.statusText.value = `${stage}${j.progress}%（${modelDisplayLabel(j.model || modelStore.aiModel)}）`
       }
     },
     afterSuccess: async () => {
@@ -618,9 +616,9 @@ async function refreshWorldLine() {
     title: '刷新世界线',
     submitLabel: '正在提交刷新任务…',
     submit: () =>
-      api.refreshWorldLine(charId, selectedTimelineId.value, { model: DEFAULT_CASCADE_MODEL }),
+      api.refreshWorldLine(charId, selectedTimelineId.value, { model: modelStore.aiModel }),
     resubmit: () =>
-      api.refreshWorldLine(charId, selectedTimelineId.value, { model: DEFAULT_CASCADE_MODEL }),
+      api.refreshWorldLine(charId, selectedTimelineId.value, { model: modelStore.aiModel }),
     onProgress: (j) => {
       if (j.status === 'running' && j.stage_text) {
         jobRunner.statusText.value = j.stage_text
@@ -820,7 +818,7 @@ async function confirmAppendNext(randomTitle: boolean) {
     thoughts: anchor.thoughts ?? '',
     personality_snapshot: anchor.personality_snapshot ?? '',
     mode: 'append_next' as const,
-    model: appendNextModel.value,
+    model: modelStore.aiModel,
     target_node_count: 1,
     next_node_title: titleHint,
   }
@@ -832,7 +830,7 @@ async function confirmAppendNext(randomTitle: boolean) {
     onProgress: (j) => {
       if (j.status === 'running') {
         const stage = j.stage_text ? `${j.stage_text} · ` : ''
-        jobRunner.statusText.value = `${stage}继续推演 ${j.progress}%（${modelDisplayLabel(j.model || appendNextModel.value)}）`
+        jobRunner.statusText.value = `${stage}继续推演 ${j.progress}%（${modelDisplayLabel(j.model || modelStore.aiModel)}）`
       }
     },
     afterSuccess: async () => {
@@ -1222,7 +1220,6 @@ onMounted(async () => {
             clearable
           />
         </el-form-item>
-        <ModelSelector v-model="appendNextModel" />
       </el-form>
       <template #footer>
         <el-button @click="appendNextVisible = false">取消</el-button>
@@ -1258,7 +1255,6 @@ onMounted(async () => {
         <el-form-item label="后续节点规模">
           <el-input-number v-model="narrativeChangeTargetNodes" :min="1" :max="25" />
         </el-form-item>
-        <ModelSelector v-model="narrativeChangeModel" />
       </el-form>
       <template #footer>
         <el-button @click="narrativeChangeVisible = false">取消</el-button>
@@ -1341,7 +1337,6 @@ onMounted(async () => {
             />
           </el-select>
         </el-form-item>
-        <ModelSelector v-model="lightNovelModel" />
       </el-form>
       <template #footer>
         <el-button @click="lightNovelPickerVisible = false">取消</el-button>
@@ -1403,7 +1398,6 @@ onMounted(async () => {
             />
           </el-select>
         </el-form-item>
-        <ModelSelector v-model="chronicleModel" />
       </el-form>
       <template #footer>
         <el-button @click="chroniclePickerVisible = false">取消</el-button>

@@ -27,18 +27,24 @@ type eraContextEntry struct {
 }
 
 type aiContextCache struct {
-	mu          sync.RWMutex
-	bundles     map[string]aiContextBundle
-	sessions    map[string]*ai.Session
-	eraContexts map[string]eraContextEntry
+	mu           sync.RWMutex
+	bundles      map[string]aiContextBundle
+	sessions     map[string]*ai.Session
+	gameSessions map[string]*ai.Session
+	eraContexts  map[string]eraContextEntry
 }
 
 func newAIContextCache() *aiContextCache {
 	return &aiContextCache{
-		bundles:     make(map[string]aiContextBundle),
-		sessions:    make(map[string]*ai.Session),
-		eraContexts: make(map[string]eraContextEntry),
+		bundles:      make(map[string]aiContextBundle),
+		sessions:     make(map[string]*ai.Session),
+		gameSessions: make(map[string]*ai.Session),
+		eraContexts:  make(map[string]eraContextEntry),
 	}
+}
+
+func gameSessionKey(characterID, versionID string) string {
+	return "game:" + characterID + ":" + versionID
 }
 
 func (c *aiContextCache) putBundle(characterID string, profile *model.Profile) {
@@ -78,6 +84,22 @@ func (c *aiContextCache) getSession(characterID, profileHash string) *ai.Session
 	return nil
 }
 
+func (c *aiContextCache) putGameSession(characterID, versionID string, sess *ai.Session) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.gameSessions[gameSessionKey(characterID, versionID)] = sess
+}
+
+func (c *aiContextCache) getGameSession(characterID, versionID, profileHash string) *ai.Session {
+	c.mu.RLock()
+	sess := c.gameSessions[gameSessionKey(characterID, versionID)]
+	c.mu.RUnlock()
+	if sess != nil && sess.Valid(profileHash) {
+		return sess
+	}
+	return nil
+}
+
 func (c *aiContextCache) eraContextKey(characterID, profileHash, characterMode string, cfg timelineJobConfig) string {
 	sum := sha256.Sum256([]byte(cfg.Instructions))
 	return fmt.Sprintf("%s:%s:%s:%d:%d:%s", characterID, profileHash, characterMode, cfg.StartYear, cfg.EndYear, hex.EncodeToString(sum[:4]))
@@ -104,6 +126,12 @@ func (c *aiContextCache) invalidate(characterID string) {
 	defer c.mu.Unlock()
 	delete(c.bundles, characterID)
 	delete(c.sessions, characterID)
+	gamePrefix := "game:" + characterID + ":"
+	for key := range c.gameSessions {
+		if strings.HasPrefix(key, gamePrefix) {
+			delete(c.gameSessions, key)
+		}
+	}
 	prefix := characterID + ":"
 	for key := range c.eraContexts {
 		if strings.HasPrefix(key, prefix) {

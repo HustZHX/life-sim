@@ -93,6 +93,38 @@ func MarshalGameConfigForPrompt(cfg *model.GameConfig) string {
 	return string(b)
 }
 
+// MarshalNodesJourneyForChoices 已历人生节点摘要（含当前节点），供抉择生成参考过往经历。
+func MarshalNodesJourneyForChoices(nodes []model.LifeNode, currentSeq int) string {
+	type lite struct {
+		Sequence            int    `json:"sequence"`
+		Year                int    `json:"year"`
+		Age                 int    `json:"age"`
+		Title               string `json:"title"`
+		Events              string `json:"events"`
+		PersonalitySnapshot string `json:"personality_snapshot,omitempty"`
+	}
+	out := make([]lite, 0, len(nodes))
+	for _, n := range nodes {
+		if currentSeq >= 0 && n.Sequence > currentSeq {
+			continue
+		}
+		snap := ""
+		if n.Sequence >= currentSeq-1 {
+			snap = TruncateRunes(n.PersonalitySnapshot, 160)
+		}
+		out = append(out, lite{
+			Sequence:            n.Sequence,
+			Year:                n.Year,
+			Age:                 n.Age,
+			Title:               n.Title,
+			Events:              TruncateRunes(n.Events, 300),
+			PersonalitySnapshot: snap,
+		})
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
+
 // MarshalGameNodeForChoices 当前节点上下文（供抉择生成）。
 func MarshalGameNodeForChoices(n *model.LifeNode) string {
 	if n == nil {

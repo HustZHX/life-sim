@@ -2,9 +2,8 @@
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, type GameChoiceOption } from '@/api/client'
-import { DEFAULT_AI_MODEL, type AIModelId } from '@/constants/models'
 import { useJobRunner } from '@/composables/useJobRunner'
-import ModelSelector from '@/components/ModelSelector.vue'
+import { useModelStore } from '@/stores/model'
 import JobProgress from '@/components/JobProgress.vue'
 
 const props = defineProps<{
@@ -27,7 +26,8 @@ let prefetchPollTimer: ReturnType<typeof setInterval> | null = null
 
 const PREFETCH_POLL_MS = 2500
 
-const showLoading = computed(() => loading.value || prefetchWaiting.value)
+/** 仅首次请求选项时全屏 loading；后台预生成不阻塞自定义推演 */
+const optionsFetching = computed(() => loading.value && !prefetchWaiting.value)
 const customText = ref('')
 const alreadyChosen = ref(false)
 const chosenLabel = ref('')
@@ -35,14 +35,15 @@ const lockedChoiceId = ref<string | null>(null)
 const lockedUseCustom = ref(false)
 /** 已确认抉择（含推演进行中）：选项置灰不可再选 */
 const choiceLocked = ref(false)
-const model = ref<AIModelId>(DEFAULT_AI_MODEL)
+const modelStore = useModelStore()
 const jobRunner = useJobRunner('抉择推演')
 
 const optionsDisabled = computed(
   () =>
     choiceLocked.value ||
     alreadyChosen.value ||
-    showLoading.value ||
+    optionsFetching.value ||
+    prefetchWaiting.value ||
     jobRunner.visible.value
 )
 
@@ -50,13 +51,13 @@ const optionsDisabled = computed(
 const pendingChoiceId = ref<string | null>(null)
 const pendingUseCustom = ref(false)
 
-const canConfirm = computed(
-  () =>
-    !choiceLocked.value &&
-    !showLoading.value &&
-    !jobRunner.visible.value &&
-    (pendingUseCustom.value ? !!customText.value.trim() : !!pendingChoiceId.value)
-)
+const canConfirm = computed(() => {
+  if (choiceLocked.value || optionsFetching.value || jobRunner.visible.value) return false
+  const custom = customText.value.trim()
+  if (pendingUseCustom.value && custom) return true
+  if (custom && !pendingChoiceId.value) return true
+  return !!pendingChoiceId.value
+})
 
 function applyLockedFromResponse(res: { already_chosen?: boolean; chosen_id?: string; custom_text?: string }) {
   if (!res.already_chosen) {
@@ -79,7 +80,7 @@ function selectOption(opt: GameChoiceOption) {
 }
 
 function selectCustom() {
-  if (optionsDisabled.value) return
+  if (choiceLocked.value || optionsFetching.value || jobRunner.visible.value) return
   if (!customText.value.trim()) {
     ElMessage.warning('请先输入自定义抉择')
     return
@@ -128,7 +129,7 @@ async function loadChoices(regenerate = false) {
   if (regenerate) resetPrefetchState()
   clearPending()
   try {
-    const res = await api.gameGetChoices(props.charId, props.nodeId, model.value, regenerate)
+    const res = await api.gameGetChoices(props.charId, props.nodeId, modelStore.aiModel, regenerate)
     options.value = res.options
     alreadyChosen.value = !!res.already_chosen
     applyLockedFromResponse(res)
@@ -181,18 +182,20 @@ async function confirmChoice() {
     ElMessage.info('该节点已做出抉择，请回退后重试')
     return
   }
-  const choiceId = pendingUseCustom.value ? undefined : pendingChoiceId.value ?? undefined
-  const custom = pendingUseCustom.value ? customText.value.trim() : ''
-  if (!choiceId && !custom) {
-    ElMessage.warning('请先点选一项抉择，或填写自定义后选用')
+  const custom = customText.value.trim()
+  const useCustom = pendingUseCustom.value || (!pendingChoiceId.value && !!custom)
+  const choiceId = useCustom ? undefined : pendingChoiceId.value ?? undefined
+  const customPayload = useCustom ? custom : ''
+  if (!choiceId && !customPayload) {
+    ElMessage.warning('请先点选一项抉择，或填写自定义抉择')
     return
   }
   choiceLocked.value = true
   alreadyChosen.value = true
   lockedChoiceId.value = choiceId ?? null
-  lockedUseCustom.value = !!custom
-  if (custom) {
-    chosenLabel.value = custom
+  lockedUseCustom.value = !!customPayload
+  if (customPayload) {
+    chosenLabel.value = customPayload
   } else {
     const picked = options.value.find((o) => o.id === choiceId)
     chosenLabel.value = picked?.label || '已抉择'
@@ -203,15 +206,15 @@ async function confirmChoice() {
     submitLabel: '正在推演后果…',
     submit: () =>
       api.gameChoose(props.charId, props.nodeId, {
-        model: model.value,
+        model: modelStore.aiModel,
         choice_id: choiceId,
-        custom_text: custom || undefined,
+        custom_text: customPayload || undefined,
       }),
     resubmit: () =>
       api.gameChoose(props.charId, props.nodeId, {
-        model: model.value,
+        model: modelStore.aiModel,
         choice_id: choiceId,
-        custom_text: custom || undefined,
+        custom_text: customPayload || undefined,
       }),
     afterSuccess: () => {
       emit('done')
@@ -249,15 +252,20 @@ async function confirmChoice() {
         v-if="!choiceLocked"
         text
         type="primary"
-        :loading="showLoading"
+        :loading="loading"
         @click="loadChoices(true)"
       >
         刷新选项
       </el-button>
     </div>
 
-    <p v-if="!choiceLocked && !showLoading" class="panel-hint">
-      选项已在推演后自动生成；点选一项后，再点下方「确认选择」开始推演。
+    <p v-if="!choiceLocked && !optionsFetching" class="panel-hint">
+      <template v-if="prefetchWaiting">
+        预设选项正在后台生成，你可先填写自定义抉择并推演，无需等待。
+      </template>
+      <template v-else>
+        以下为人生大事级分岔；点选或填写自定义后，再点「确认选择」开始推演。
+      </template>
     </p>
 
     <div v-if="choiceLocked" class="chosen-hint">
@@ -265,16 +273,13 @@ async function confirmChoice() {
       <template v-else>已选择：{{ chosenLabel }}</template>
     </div>
 
-    <div
-      v-else-if="showLoading"
-      v-loading="showLoading"
-      class="loading-block"
-      :element-loading-text="prefetchWaiting ? '选项正在后台生成中…' : '正在加载选项…'"
-    >
-      <span class="loading-hint">
-        {{ prefetchWaiting ? '选项正在后台生成中，请稍候或点击「刷新选项」' : '正在加载选项…' }}
-      </span>
+    <div v-else-if="optionsFetching" v-loading="true" class="loading-block" element-loading-text="正在加载选项…">
+      <span class="loading-hint">正在加载选项…</span>
     </div>
+
+    <p v-else-if="prefetchWaiting && !options.length" class="prefetch-banner">
+      预设选项生成中… 可先使用下方自定义抉择。
+    </p>
 
     <div v-if="options.length" class="options" :class="{ 'options--locked': choiceLocked }">
       <button
@@ -298,13 +303,13 @@ async function confirmChoice() {
       </button>
     </div>
 
-    <div v-if="!choiceLocked && !showLoading && options.length" class="custom-block">
+    <div v-if="!choiceLocked && !optionsFetching" class="custom-block">
       <el-input
         v-model="customText"
         type="textarea"
         :rows="2"
-        placeholder="或输入你自己的抉择…"
-        :disabled="optionsDisabled"
+        placeholder="输入你自己的抉择（选项未生成时也可直接推演）…"
+        :disabled="choiceLocked || jobRunner.visible.value"
         @input="clearPending"
       />
       <div class="custom-actions">
@@ -325,7 +330,6 @@ async function confirmChoice() {
       </el-button>
     </div>
 
-    <ModelSelector v-if="!choiceLocked" v-model="model" class="model-row" />
   </div>
 </template>
 
@@ -436,13 +440,18 @@ async function confirmChoice() {
   display: flex;
   justify-content: center;
 }
-.model-row {
-  margin-top: 12px;
-}
 .chosen-hint,
-.loading-hint {
+.loading-hint,
+.prefetch-banner {
   color: #909399;
   font-size: 0.9rem;
+}
+.prefetch-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  background: #f4f4f5;
+  border-radius: 6px;
+  line-height: 1.5;
 }
 .loading-block {
   min-height: 72px;

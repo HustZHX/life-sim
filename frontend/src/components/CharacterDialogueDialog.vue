@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { ChatDotRound, Loading } from '@element-plus/icons-vue'
-import ModelSelector from '@/components/ModelSelector.vue'
 import CharacterMemoryPanel from '@/components/CharacterMemoryPanel.vue'
 import type { DialogueSessionSummary, LifeNode } from '@/api/client'
 import { useCharacterDialogue } from '@/composables/useCharacterDialogue'
@@ -27,7 +26,6 @@ const {
   sessionHistory,
   node,
   isActiveBranch,
-  model,
   identityOptions,
   selectedIdentity,
   customIdentity,
@@ -143,7 +141,6 @@ defineExpose({ open: openDialogue, openHistory: openDialogueHistory })
     />
 
     <div v-if="step === 'identity'" class="identity-step">
-      <ModelSelector v-model="model" class="model-row" />
 
       <div v-loading="identityLoading" class="identity-body">
         <div class="identity-head">
@@ -250,7 +247,6 @@ defineExpose({ open: openDialogue, openHistory: openDialogueHistory })
                 历史对话
               </el-button>
             </div>
-            <ModelSelector v-model="model" />
           </div>
 
           <div ref="chatScrollRef" class="messages">

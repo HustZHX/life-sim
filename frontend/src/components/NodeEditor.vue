@@ -2,21 +2,15 @@
 import { computed, ref, watch } from 'vue'
 import { EditPen } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import {
-  api,
-  type AIModelId,
-  type LifeNode,
-  type Profile,
-  type TimelineConfig,
-} from '@/api/client'
+import { api, type LifeNode, type Profile, type TimelineConfig } from '@/api/client'
 import type { EntityHighlightContext } from '@/utils/textEntities'
 import { entityContextFromNode } from '@/utils/textEntities'
-import ModelSelector from '@/components/ModelSelector.vue'
 import HighlightedText from '@/components/HighlightedText.vue'
+import { useModelStore } from '@/stores/model'
 import TimelineConfigPanel from '@/components/TimelineConfigPanel.vue'
 import NodeSceneMeta from '@/components/NodeSceneMeta.vue'
 import { MIN_TARGET_NODE_COUNT } from '@/utils/timelineDensity'
-import { DEFAULT_AI_MODEL, DEFAULT_CASCADE_MODEL } from '@/constants/models'
+import type { AIModelId } from '@/constants/models'
 import type { NarrativeKind } from '@/api/client'
 import { fieldLabel } from '@/constants/fieldLabels'
 
@@ -51,8 +45,7 @@ const form = ref({
   thoughts: '',
   personality_snapshot: '',
 })
-const model = ref<AIModelId>(DEFAULT_AI_MODEL)
-const cascadeModel = ref<AIModelId>(DEFAULT_CASCADE_MODEL)
+const modelStore = useModelStore()
 const regenConfig = ref<TimelineConfig>({
   target_node_count: MIN_TARGET_NODE_COUNT,
   start_year: 0,
@@ -121,11 +114,11 @@ function cancelEdit() {
 }
 
 function openNarrative(kind: Exclude<NarrativeKind, 'light_novel' | 'chronicle'>) {
-  emit('narrative', kind, model.value)
+  emit('narrative', kind, modelStore.aiModel)
 }
 
 function openDialogue() {
-  emit('dialogue', model.value)
+  emit('dialogue', modelStore.aiModel)
 }
 
 async function regenerateEventsFromTitle() {
@@ -139,7 +132,7 @@ async function regenerateEventsFromTitle() {
   try {
     const res = await api.regenerateNodeEvents(props.characterId, props.node.id, {
       title,
-      model: model.value,
+      model: modelStore.aiModel,
     })
     form.value.events = res.events
     if (res.thoughts) form.value.thoughts = res.thoughts
@@ -154,7 +147,7 @@ async function regenerateEventsFromTitle() {
 }
 
 function syncCurrentInner() {
-  emit('save', { mode: 'inner_current', model: model.value, patch: buildPatch() })
+  emit('save', { mode: 'inner_current', model: modelStore.aiModel, patch: buildPatch() })
 }
 
 function deduceRemainingLife() {
@@ -165,7 +158,7 @@ function deduceRemainingLife() {
   }
   emit('save', {
     mode: 'full_cascade',
-    model: cascadeModel.value,
+    model: modelStore.aiModel,
     patch,
     target_node_count: regenConfig.value.target_node_count,
   })
@@ -243,7 +236,6 @@ function deduceRemainingLife() {
         </el-card>
       </div>
 
-      <ModelSelector v-model="model" class="read-model" />
 
       <div class="dialogue-box">
         <el-button type="primary" @click="openDialogue">与 TA 对话</el-button>
@@ -277,11 +269,9 @@ function deduceRemainingLife() {
         <p class="cascade-hint">
           从当前节点起新增若干人生阶段。会创建新分支并自动切换；经历与职业可在推演中逐步填写。
         </p>
-        <ModelSelector v-model="cascadeModel" />
         <TimelineConfigPanel
           v-model="regenConfig"
           :profile="profile"
-          :model="cascadeModel"
           :anchor-year="node.year"
           density-only
           :disabled="loading"
@@ -336,7 +326,6 @@ function deduceRemainingLife() {
         </div>
       </div>
 
-      <ModelSelector v-model="model" />
 
       <div class="dialogue-box">
         <el-button type="primary" @click="openDialogue">与 TA 对话</el-button>
@@ -362,11 +351,9 @@ function deduceRemainingLife() {
         <p class="cascade-hint">
           从锚点起新增若干节点（如 M=1 仅生成下一个人生阶段）。会创建新分支并自动切换。
         </p>
-        <ModelSelector v-model="cascadeModel" />
         <TimelineConfigPanel
           v-model="regenConfig"
           :profile="profile"
-          :model="cascadeModel"
           :anchor-year="node.year"
           density-only
           :disabled="loading"

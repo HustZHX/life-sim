@@ -3,13 +3,12 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api, type GameEraOption, type Profile } from '@/api/client'
-import { DEFAULT_AI_MODEL, type AIModelId } from '@/constants/models'
+import { useModelStore } from '@/stores/model'
 import { useAwaitProgress } from '@/composables/useAwaitProgress'
 import { useGameCreate } from '@/composables/useGameCreate'
 import CandidateCards from '@/components/CandidateCards.vue'
 import EraPeriodCards from '@/components/EraPeriodCards.vue'
 import ProfilePanel from '@/components/ProfilePanel.vue'
-import ModelSelector from '@/components/ModelSelector.vue'
 import JobProgress from '@/components/JobProgress.vue'
 
 const router = useRouter()
@@ -23,8 +22,7 @@ const selectedEra = ref<GameEraOption | null>(null)
 const profile = ref<Profile | null>(null)
 const loading = ref(false)
 const eraLoading = ref(false)
-const profileModel = ref<AIModelId>(DEFAULT_AI_MODEL)
-const startModel = ref<AIModelId>(DEFAULT_AI_MODEL)
+const modelStore = useModelStore()
 
 const resolveJob = useAwaitProgress('查找候选人')
 const profileJob = useAwaitProgress('生成档案')
@@ -97,7 +95,7 @@ async function generateEraOptions(regenerate = false) {
   const previousOptions = [...eraOptions.value]
   try {
     const res = await api.gameEraOptions(characterId.value, {
-      model: profileModel.value,
+      model: modelStore.aiModel,
       era_description: eraDescription.value.trim(),
       regenerate,
     })
@@ -132,7 +130,7 @@ async function confirmEraAndProfile() {
       start_year_hint: selectedEra.value.start_year,
     })
     const p = await profileJob.run(
-      () => api.gameGenerateProfile(characterId.value, { model: profileModel.value }),
+      () => api.gameGenerateProfile(characterId.value, { model: modelStore.aiModel }),
       { title: '生成阶段档案', startText: 'AI 正在整理该时期的人物状态…' }
     )
     profile.value = p
@@ -145,7 +143,7 @@ async function confirmEraAndProfile() {
 }
 
 async function onStartGame() {
-  const result = await startGameTimeline(characterId.value, startModel.value)
+  const result = await startGameTimeline(characterId.value, modelStore.aiModel)
   if (result.ok) {
     router.push(`/game/timeline/${characterId.value}`)
   }
@@ -176,7 +174,6 @@ async function onStartGame() {
     <div v-if="step === 1">
       <h2 class="step-title">输入历史名人姓名</h2>
       <el-input v-model="query" placeholder="例如：诸葛亮、李白" size="large" :disabled="loading" @keyup.enter="start" />
-      <ModelSelector v-model="profileModel" style="margin-top: 16px" />
       <el-button type="primary" size="large" :loading="loading" style="margin-top: 16px" @click="start">查找候选人</el-button>
     </div>
 
@@ -231,7 +228,6 @@ async function onStartGame() {
     <div v-if="step === 4 && profile">
       <h2 class="step-title">档案预览 · {{ selectedEra?.label }}</h2>
       <ProfilePanel :profile="profile" />
-      <ModelSelector v-model="startModel" style="margin-top: 16px" />
       <el-button type="primary" size="large" :loading="starting" style="margin-top: 16px" @click="onStartGame">
         开始人生游戏
       </el-button>

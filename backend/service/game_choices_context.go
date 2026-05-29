@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"life-sim/backend/model"
 	"life-sim/backend/store"
@@ -13,17 +14,17 @@ func gameLifeStageHint(age int) string {
 	case age <= 0:
 		return "年龄未知：选项须贴合节点 events 所描述的生活阶段，勿赋予超出叙述的权力与职责。"
 	case age <= 5:
-		return fmt.Sprintf("婴幼儿（%d 岁）：仅限家庭照料、启蒙玩耍、随长辈迁居等；禁止从政从戎、独立重大决策。", age)
+		return fmt.Sprintf("婴幼儿（%d 岁）：选项须为人生方向级（启蒙去向、随亲迁居、过继改宗等），禁止日常琐事；禁止从政从戎。", age)
 	case age <= 11:
-		return fmt.Sprintf("童年（%d 岁）：学塾启蒙、家务帮衬、邻里孩童交往、随家迁徙；禁止率军、任职高官、主导国策或独自远行征战。", age)
+		return fmt.Sprintf("童年（%d 岁）：选项须为人生大事（启蒙去向、定亲意向、随家迁徙、承嗣过继等），禁止玩耍闲聊类琐事；禁止率军、任职高官。", age)
 	case age <= 17:
-		return fmt.Sprintf("少年（%d 岁）：可求学拜师、学艺帮工、局部冒险；禁止统帅大军、封侯拜相、称帝登基或承担一方牧守。", age)
+		return fmt.Sprintf("少年（%d 岁）：选项须为人生分岔（求学拜师、学艺从戎、婚配意向、出奔投靠等），禁止琐碎日常；禁止统帅大军、封侯拜相。", age)
 	case age <= 39:
-		return fmt.Sprintf("青年/壮年（%d 岁）：可按社会角色承担相应职责；仍须符合阶级、时代与当前处境。", age)
+		return fmt.Sprintf("青年/壮年（%d 岁）：选项须为人生大事（出仕、从军、婚配、迁徙、创业、结党、守丧等），禁止无关细枝末节。", age)
 	case age <= 59:
-		return fmt.Sprintf("中年（%d 岁）：选项须符合既有身份与时代；勿突然越级获得与履历不符的权力。", age)
+		return fmt.Sprintf("中年（%d 岁）：选项须为人生大事（仕途转折、归隐、继承、改业、联盟、避祸等），勿突然越级获权，禁止琐碎选项。", age)
 	default:
-		return fmt.Sprintf("老年（%d 岁）：宜侧重传承、休养、著述、教导后辈；避免与体魄、身份不符的激烈征战或新政。", age)
+		return fmt.Sprintf("老年（%d 岁）：选项须为人生大事（传嗣、著述、归隐、教导、致仕等），避免与体魄不符的征战；禁止日常琐事。", age)
 	}
 }
 
@@ -44,17 +45,109 @@ func gameModeLabel(mode string) string {
 	return "虚构人生"
 }
 
-func buildGameNodeChoicesUser(ch *model.Character, profile *model.Profile, node *model.LifeNode) string {
+func marshalGameChoiceHistory(nodes []model.LifeNode, rows []struct {
+	NodeID       string
+	NodeSequence int
+	Record       model.GameNodeChoiceRecord
+}, beforeSeq int) string {
+	yearBySeq := make(map[int]int, len(nodes))
+	for _, n := range nodes {
+		yearBySeq[n.Sequence] = n.Year
+	}
+	type lite struct {
+		NodeSequence int    `json:"node_sequence"`
+		Year         int    `json:"year,omitempty"`
+		Choice       string `json:"choice"`
+	}
+	out := make([]lite, 0)
+	for _, row := range rows {
+		if row.NodeSequence >= beforeSeq {
+			continue
+		}
+		text := resolveGameChoiceDisplayText(&row.Record)
+		if text == "" {
+			continue
+		}
+		out = append(out, lite{
+			NodeSequence: row.NodeSequence,
+			Year:         yearBySeq[row.NodeSequence],
+			Choice:       text,
+		})
+	}
+	if len(out) == 0 {
+		return "[]"
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
+
+func buildGameNodeChoicesUser(
+	ch *model.Character,
+	profile *model.Profile,
+	node *model.LifeNode,
+	journeyJSON, worldLineJSON, choiceHistoryJSON string,
+) string {
 	age := resolveNodeAge(profile, node)
+	personalityBlock := fmt.Sprintf(
+		"性格初态：%s\n信念/座右铭：%s\n经历摘要：%s\n社会阶层：%s\n职业：%s",
+		strings.TrimSpace(profile.PersonalityInitial),
+		strings.TrimSpace(profile.BeliefsMotto),
+		store.TruncateRunes(strings.TrimSpace(profile.Experiences), 400),
+		strings.TrimSpace(profile.SocialClass),
+		strings.TrimSpace(profile.Occupation),
+	)
 	return fmt.Sprintf(
-		"【模式】%s\n【人物】%s\n【角色状态】%s\n\n【处境约束（必须遵守）】\n%s\n\n人物档案：\n%s\n\n游戏配置（所选时期/开局阶段）：\n%s\n\n当前节点：\n%s",
+		`【模式】%s
+【人物】%s
+【角色状态】%s
+
+【处境约束（必须遵守）】
+%s
+
+【人物性格与处境（选项须与此一致）】
+%s
+
+【世界线——天下大势与时代背景（选项应呼应，勿凭空捏造素材外重大事件）】
+%s
+
+【已历人生节点——主角亲身经历（选项须承接，勿与已发生事实矛盾）】
+%s
+
+【既往人生抉择——玩家已选分岔（勿重复同一方向，可推进或合理转折）】
+%s
+
+人物档案（完整）：
+%s
+
+游戏配置（所选时期/开局阶段）：
+%s
+
+【当前节点——请为此刻生成 3～5 个人生大事级抉择】
+%s`,
 		gameModeLabel(ch.Mode),
 		profile.DisplayName,
 		ch.Status,
 		gameLifeStageHint(age),
+		personalityBlock,
+		worldLineJSON,
+		journeyJSON,
+		choiceHistoryJSON,
 		store.ProfileJSONTimeline(profile),
 		store.MarshalGameConfigForPrompt(ch.GameConfig),
 		store.MarshalGameNodeForChoices(node),
+	)
+}
+
+func buildGameNodeChoicesFollowUp(node *model.LifeNode, regenerate bool) string {
+	if regenerate {
+		return fmt.Sprintf(
+			"请重新生成 3～5 个人生大事级抉择（须与上文世界线、已历经历、性格与既往抉择一致，勿重复已走过的分岔）。当前节点 sequence=%d，year=%d，《%s》。",
+			node.Sequence, node.Year, node.Title,
+		)
+	}
+	return fmt.Sprintf(
+		"请为下列「当前节点」生成 3～5 个人生大事级抉择（须承接世界线、已历经历、性格与既往抉择）。当前节点 sequence=%d，year=%d，《%s》。",
+		node.Sequence, node.Year, node.Title,
 	)
 }
 
